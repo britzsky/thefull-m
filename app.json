@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "thefull-m",
+    "slug": "thefull-m",
+    "scheme": "thefullm",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "출퇴근 기록을 위해 현재 위치 권한이 필요합니다."
+        }
+      ],
+      "./plugins/withPlayServicesAppSet.js"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.thefull.thefullm"
+    },
+    "android": {
+      "package": "com.thefull.thefullm",
+      "versionCode": 1
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
