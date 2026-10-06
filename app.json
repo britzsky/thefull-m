@@ -28,10 +28,20 @@
     },
     "android": {
       "package": "com.thefull.thefullm",
-      "versionCode": 1
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b2cb4243-7c4d-47f9-9300-98664716ac2f"
+      }
     }
   }
 }

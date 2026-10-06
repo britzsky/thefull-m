@@ -18,20 +18,26 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useFocusEffect } from 'expo-router'
 import * as Location from 'expo-location'
+import * as Application from 'expo-application'
 
 import KakaoCommuteMap from '@/components/KakaoCommuteMap'
 
 import {
+  type AppVersionInfo,
   type AttendanceAccount,
   type AttendanceTarget,
   type CommuteAction,
   type CommuteIdentity,
   type DeviceInfo,
+  type PrivacyConsentStatus,
   type TodayStatus,
+  agreePrivacyConsent,
   checkCommuteDeviceOwner,
   fetchAccountCoordinate,
+  fetchAppVersionInfo,
   fetchAttendanceAccounts,
   fetchDeviceInfo,
+  fetchPrivacyConsentStatus,
   fetchTodayStatus,
   requestCommuteDevice,
   submitCommute,
@@ -53,14 +59,15 @@ type LocationSnapshot = {
   timestamp: number
 }
 
-// 출퇴근 허용 반경(미터)
-const GEOFENCE_M = 100
+// 근무지에 반경(radiusM)이 따로 지정돼 있지 않을 때 쓰는 기본 출퇴근 허용 반경(미터)
+const DEFAULT_GEOFENCE_M = 100
 // 본사 계정 아이디
 const HEAD_OFFICE_ACCOUNT_ID = 'HQ'
 // 본사 좌표(계정 목록에 좌표가 없을 때 사용하는 고정값)
 const HEAD_OFFICE_TARGET: AttendanceTarget = {
   xCoordinate: 126.9729874683217,
   yCoordinate: 37.27480304451022,
+  radiusM: DEFAULT_GEOFENCE_M,
 }
 
 // 두 좌표 사이 거리 계산(하버사인 공식)
@@ -160,6 +167,9 @@ export default function AttendanceScreen() {
   const [isSubmittingAttendance, setIsSubmittingAttendance] = useState(false)
   const [isConfirmingIdentity, setIsConfirmingIdentity] = useState(false)
 
+  // 서버가 내려준 강제 업데이트 요구 버전 정보(없거나 현재 버전과 같으면 통과)
+  const [appVersionInfo, setAppVersionInfo] = useState<AppVersionInfo | null>(null)
+
   // 검색어로 필터링한 근무지 목록
   const filteredAccounts = useMemo(() => {
     const query = accountQuery.trim().toLowerCase()
@@ -193,13 +203,15 @@ export default function AttendanceScreen() {
         location.longitude
       )
 
+      const radiusM = target.radiusM ?? DEFAULT_GEOFENCE_M
+
       setCurrentLocation(location)
       setDistanceFromOffice(distance)
       setPermissionState('granted')
       setPermissionMessage(
-        distance <= GEOFENCE_M
+        distance <= radiusM
           ? '근무지 범위 안에 있습니다. 출퇴근할 수 있습니다.'
-          : `근무지에서 ${GEOFENCE_M}m 이내로 이동해야 출퇴근할 수 있습니다.`
+          : `근무지에서 ${radiusM}m 이내로 이동해야 출퇴근할 수 있습니다.`
       )
 
       return distance
@@ -309,25 +321,39 @@ export default function AttendanceScreen() {
         if (!target) throw new Error('선택한 근무지의 지도 좌표가 등록되어 있지 않습니다.')
 
         setAttendanceTarget(target)
+        const radiusM = target.radiusM ?? DEFAULT_GEOFENCE_M
 
         try {
           const { distance } = await resolveLocation(target)
-          return distance
+          return { distance, radiusM }
         } catch (error) {
           const message = error instanceof Error ? error.message : '현재 위치를 확인하지 못했습니다.'
           setPermissionState('denied')
           setPermissionMessage(message)
-          return null
+          return { distance: null, radiusM }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '근무지 위치를 불러오지 못했습니다.'
         setPermissionState('denied')
         setPermissionMessage(message)
-        return null
+        return { distance: null, radiusM: DEFAULT_GEOFENCE_M }
       }
     },
     [resolveLocation]
   )
+
+  // 30초 캐시를 건너뛰고 현재 위치를 강제로 새로 조회합니다(수동 새로고침 버튼용).
+  const refreshCurrentLocation = async () => {
+    if (!attendanceTarget) return
+
+    try {
+      await getFreshLocation(attendanceTarget)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '현재 위치를 확인하지 못했습니다.'
+      setPermissionState('denied')
+      setPermissionMessage(message)
+    }
+  }
 
   // 기기 등록 상태와 오늘 출퇴근 상태를 서버에서 갱신
   const refreshIdentityStatus = useCallback(async (identity: CommuteIdentity) => {
@@ -362,6 +388,17 @@ export default function AttendanceScreen() {
 
           setAccountList(accounts)
           setDeviceToken(nextDeviceToken)
+
+          // 강제 업데이트 확인은 화면 진입 즉시, 다른 초기화와 별개로 처리합니다
+          // (실패해도 출퇴근 화면 자체는 계속 쓸 수 있어야 하므로 조용히 무시).
+          void fetchAppVersionInfo()
+            .then((info) => {
+              if (active) setAppVersionInfo(info)
+            })
+            .catch(() => {})
+
+          // 개인정보 수집 동의는 사람(account_id+user_name+phone_last4) 기준이라
+          // 아직 본인 확인 전인 이 시점에는 조회할 수 없고, confirmIdentity에서 함께 확인합니다.
           setName('')
           setPhoneLast4('')
           setAccountQuery('')
@@ -513,27 +550,72 @@ export default function AttendanceScreen() {
       // attendanceTarget이 없는 경우에만(이름/휴대폰을 나중에 입력한 경우 등) 처음부터 조회합니다.
       // 이 위치/거리 확인(GPS 포함)은 기기등록 여부 판단과는 무관하므로, 아래에서 기다리지 않고
       // 백그라운드로 흘려보낸 뒤 지오펜스 판단이 실제로 필요한 시점에만 결과를 기다립니다.
-      const distanceTask: Promise<number | null> = attendanceTarget
+      const geofenceRadiusM = attendanceTarget?.radiusM ?? DEFAULT_GEOFENCE_M
+      const distanceTask: Promise<{ distance: number | null; radiusM: number }> = attendanceTarget
         ? resolveLocation(attendanceTarget)
-            .then(({ distance }) => distance)
+            .then(({ distance }) => ({ distance, radiusM: geofenceRadiusM }))
             .catch((error) => {
               const message = error instanceof Error ? error.message : '현재 위치를 확인하지 못했습니다.'
               setPermissionState('denied')
               setPermissionMessage(message)
-              return null
+              return { distance: null, radiusM: geofenceRadiusM }
             })
         : loadAccountTarget(selectedAccount)
 
-      // 기기 식별자를 휴대폰 뒷자리로 다시 조회합니다(Android/iOS는 하드웨어 식별자라 동일한 값이
-      // 즉시 반환되고, fallback 토큰만 이 사용자 전용 값으로 새로 확인/생성됩니다).
-      // 기기등록 필요 여부 판단에는 위치가 필요 없으므로 distanceTask는 여기서 기다리지 않습니다.
-      const [nextDeviceInfo, resolvedDeviceToken] = await Promise.all([
+      // 기기 식별자 조회, 개인정보 수집 동의 여부 조회를 기기등록 상태 조회와 함께 한 번에 보냅니다
+      // (Android/iOS는 하드웨어 식별자라 동일한 값이 즉시 반환되고, fallback 토큰만 이 사용자 전용
+      // 값으로 새로 확인/생성됩니다). 기기등록 필요 여부 판단에는 위치가 필요 없으므로
+      // distanceTask는 여기서 기다리지 않습니다.
+      const [nextDeviceInfo, resolvedDeviceToken, consentStatus] = await Promise.all([
         refreshIdentityStatus(identity),
         getOrCreateCommuteDeviceToken(phoneLast4),
+        fetchPrivacyConsentStatus(identity).catch(() => null as PrivacyConsentStatus | null),
       ])
       setDeviceToken(resolvedDeviceToken)
       setConfirmedIdentity(identity)
 
+      const consentAgreed = String(consentStatus?.agree_yn ?? 'N').toUpperCase() === 'Y'
+
+      if (consentAgreed) {
+        await evaluateDeviceAndGeofence(identity, resolvedDeviceToken, nextDeviceInfo, distanceTask)
+        return
+      }
+
+      // 아직 동의한 적 없는 사람이면, 기기등록/지오펜스 판정으로 넘어가기 전에 먼저 물어봅니다.
+      // 이미 동의한 적 있는 사람은 이 단계 자체를 안 거치므로 매번 방해받지 않습니다.
+      setIsConfirmingIdentity(false)
+      Alert.alert(
+        '개인정보 수집 동의',
+        '출퇴근 관리를 위해 이름, 휴대폰번호 뒷자리, 출퇴근 위치정보(GPS), 기기 식별자를 수집합니다.\n보유 기간: 3년\n\n동의하지 않으면 앱으로 출퇴근을 기록할 수 없습니다.',
+        [
+          { text: '취소', style: 'cancel', onPress: () => invalidateIdentity() },
+          {
+            text: '동의',
+            onPress: () => {
+              void agreePrivacyConsent(identity, resolvedDeviceToken, getCommuteDeviceName()).catch(() => {})
+              setIsConfirmingIdentity(true)
+              void evaluateDeviceAndGeofence(identity, resolvedDeviceToken, nextDeviceInfo, distanceTask)
+            },
+          },
+        ]
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '본인 정보를 확인하지 못했습니다.'
+      Alert.alert('확인 실패', message)
+      setIsConfirmingIdentity(false)
+    }
+  }
+
+  // 기기등록 상태와 지오펜스(반경)를 확인해서 강조 표시 상태를 갱신합니다.
+  // 개인정보 수집에 이미 동의한 경우 confirmIdentity에서 바로 호출되고,
+  // 처음 동의한 경우에는 동의 팝업에서 "동의"를 눌렀을 때 이어서 호출됩니다.
+  const evaluateDeviceAndGeofence = async (
+    identity: CommuteIdentity,
+    resolvedDeviceToken: string,
+    nextDeviceInfo: DeviceInfo | null,
+    distanceTask: Promise<{ distance: number | null; radiusM: number }>
+  ) => {
+    try {
       // 같은 기기인지는 여기서 서버가 저장해둔 device_token/pending_device_token 문자열과
       // 이 기기의 resolvedDeviceToken을 비교해서 판단합니다.
       const approved = String(nextDeviceInfo?.approve_yn ?? 'N').toUpperCase() === 'Y'
@@ -572,8 +654,8 @@ export default function AttendanceScreen() {
         })
       } else {
         // 기기는 문제없으니 이제 근무지 반경 밖인지 판단하기 위해 거리 결과를 기다립니다.
-        const distance = await distanceTask
-        const geofenceFails = distance !== null && distance > GEOFENCE_M
+        const { distance, radiusM } = await distanceTask
+        const geofenceFails = distance !== null && distance > radiusM
 
         if (geofenceFails) {
           setDeviceAttentionNeeded(false)
@@ -685,6 +767,11 @@ export default function AttendanceScreen() {
     }
   }
 
+  // 서버가 내려준 버전과 현재 설치된 앱 버전이 다르면 강제 업데이트 대상으로 판단합니다.
+  const currentAppVersion = Application.nativeApplicationVersion ?? ''
+  const requiredAppVersion = String(appVersionInfo?.version ?? '').trim()
+  const updateRequired = !!requiredAppVersion && requiredAppVersion !== currentAppVersion
+
   // 오늘 출퇴근 완료 여부와 다음 진행할 액션 판정
   const checkedIn = !!todayStatus?.start_time
   const checkedOut = !!todayStatus?.end_time
@@ -693,11 +780,13 @@ export default function AttendanceScreen() {
     : !checkedOut
       ? 'clockOut'
       : null
+  // 현재 선택된 근무지의 출퇴근 허용 반경(미터). 근무지별로 다르게 지정될 수 있어 기본값과 분리합니다.
+  const geofenceRadiusM = attendanceTarget?.radiusM ?? DEFAULT_GEOFENCE_M
   // 지오펜스(반경) 이내 여부 판정
   const geofenceOk =
     permissionState === 'granted' &&
     distanceFromOffice !== null &&
-    distanceFromOffice <= GEOFENCE_M
+    distanceFromOffice <= geofenceRadiusM
 
   // 근무지 반경 안으로 들어오면 지도 카드 강조 표시를 끕니다.
   useEffect(() => {
@@ -729,8 +818,8 @@ export default function AttendanceScreen() {
           }
         : await getFreshLocation(attendanceTarget)
 
-      if (distance > GEOFENCE_M) {
-        throw new Error(`근무지에서 ${GEOFENCE_M}m 이내에 있을 때만 출퇴근할 수 있습니다.`)
+      if (distance > geofenceRadiusM) {
+        throw new Error(`근무지에서 ${geofenceRadiusM}m 이내에 있을 때만 출퇴근할 수 있습니다.`)
       }
 
       const response = await submitCommute(
@@ -779,7 +868,30 @@ export default function AttendanceScreen() {
     isCurrentDeviceApproved && geofenceOk && nextAction === 'clockOut' && !isSubmittingAttendance
   // 근무지 반경을 벗어나 출퇴근이 불가능한 상태인지 여부(안내 문구 강조용)
   const isTooFarFromOffice =
-    permissionState === 'granted' && distanceFromOffice !== null && distanceFromOffice > GEOFENCE_M
+    permissionState === 'granted' && distanceFromOffice !== null && distanceFromOffice > geofenceRadiusM
+
+  // 강제 업데이트 대상이면 다른 화면 진입 전에 업데이트 안내만 보여줍니다.
+  if (updateRequired) {
+    return (
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <View style={styles.gateScreen}>
+          <Text style={styles.gateTitle}>업데이트가 필요합니다</Text>
+          <Text style={styles.gateBody}>
+            새로운 버전이 있어야 출퇴근 기능을 계속 이용할 수 있습니다.{'\n'}
+            스토어에서 최신 버전으로 업데이트해 주세요.
+          </Text>
+          {appVersionInfo?.update_url ? (
+            <Pressable
+              style={styles.gateButton}
+              onPress={() => Linking.openURL(String(appVersionInfo.update_url))}
+            >
+              <Text style={styles.gateButtonText}>업데이트하러 가기</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </SafeAreaView>
+    )
+  }
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -967,7 +1079,7 @@ export default function AttendanceScreen() {
           ) : !isCurrentDeviceApproved ? (
             <Text style={styles.actionHint}>ERP에서 현재 기기를 승인해야 출퇴근할 수 있습니다.</Text>
           ) : !geofenceOk ? (
-            <Text style={styles.actionHint}>근무지에서 {GEOFENCE_M}m 이내인지 확인해 주세요.</Text>
+            <Text style={styles.actionHint}>근무지에서 {geofenceRadiusM}m 이내인지 확인해 주세요.</Text>
           ) : nextAction === null ? (
             <Text style={styles.actionHint}>오늘 출근과 퇴근 기록이 모두 완료되었습니다.</Text>
           ) : (
@@ -996,7 +1108,7 @@ export default function AttendanceScreen() {
               target={attendanceTarget}
               currentLocation={currentLocation}
               accountName={selectedAccount?.account_name || ''}
-              radius={GEOFENCE_M}
+              radius={geofenceRadiusM}
             />
           </View>
 
@@ -1020,7 +1132,18 @@ export default function AttendanceScreen() {
                 {permissionMessage}
               </Text>
             </View>
-            {permissionState === 'loading' ? <ActivityIndicator color="#6c5dd3" /> : null}
+            {permissionState === 'loading' ? (
+              <ActivityIndicator color="#6c5dd3" />
+            ) : (
+              <Pressable
+                hitSlop={10}
+                disabled={!attendanceTarget}
+                style={[styles.locationRefreshButton, !attendanceTarget && styles.buttonDisabled]}
+                onPress={() => void refreshCurrentLocation()}
+              >
+                <Text style={styles.locationRefreshIcon}>⟳</Text>
+              </Pressable>
+            )}
           </View>
         </Animated.View>
 
@@ -1282,6 +1405,15 @@ const styles = StyleSheet.create({
   permissionMessageOk: { color: '#1fa45c' },
   permissionMessageAlert: { color: '#e5566b', fontSize: 13, fontWeight: '900' },
   helperText: { color: '#747b86', fontSize: 12, lineHeight: 18 },
+  locationRefreshButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 999,
+    backgroundColor: '#eef0ff',
+  },
+  locationRefreshIcon: { color: '#6c5dd3', fontSize: 18, fontWeight: '900' },
   statusBadge: { maxWidth: '70%', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   statusApproved: { backgroundColor: '#e8f8ef' },
   statusPending: { backgroundColor: '#fff4dc' },
@@ -1327,4 +1459,18 @@ const styles = StyleSheet.create({
   actionButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
   actionHint: { color: '#747b86', fontSize: 12, lineHeight: 18, textAlign: 'center' },
   buttonDisabled: { opacity: 0.42 },
+  // 강제 업데이트/개인정보 동의 화면 공통 레이아웃
+  gateScreen: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 28, gap: 18 },
+  gateTitle: { color: '#27303f', fontSize: 20, fontWeight: '900', textAlign: 'center' },
+  gateBody: { color: '#4b5563', fontSize: 14, lineHeight: 22, textAlign: 'left' },
+  gateButton: {
+    minHeight: 52,
+    minWidth: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    paddingHorizontal: 24,
+    backgroundColor: '#6c5dd3',
+  },
+  gateButtonText: { color: '#ffffff', fontSize: 15, fontWeight: '900' },
 })

@@ -1,3 +1,5 @@
+import { Platform } from 'react-native'
+
 import { api } from '@/lib/api/client'
 
 export type CommuteIdentity = {
@@ -14,6 +16,7 @@ export type AttendanceAccount = {
 export type AttendanceTarget = {
   xCoordinate: number
   yCoordinate: number
+  radiusM: number | null
 }
 
 export type DeviceInfo = {
@@ -35,6 +38,7 @@ export type TodayStatus = {
 type CoordinatePayload = {
   x_coordinate?: number | string | null
   y_coordinate?: number | string | null
+  radius_m?: number | string | null
 }
 
 type MessagePayload = {
@@ -86,7 +90,7 @@ export async function fetchAccountCoordinate(accountId: string) {
     return null
   }
 
-  return { xCoordinate, yCoordinate }
+  return { xCoordinate, yCoordinate, radiusM: toFiniteNumber(response?.radius_m) }
 }
 
 export function fetchDeviceInfo(identity: CommuteIdentity) {
@@ -191,5 +195,48 @@ export function submitCommute(
   return api.post<MessagePayload>('/Account/CommuteSave', {
     ...commonPayload,
     ...actionPayload,
+  })
+}
+
+export type AppVersionInfo = {
+  platform?: string | null
+  version?: string | null
+  update_url?: string | null
+}
+
+// 앱 진입 시 강제 업데이트 여부 판단을 위해 서버에 등록된 최신 요구 버전을 조회합니다.
+export function fetchAppVersionInfo() {
+  return api.get<AppVersionInfo | null>('/Account/CommuteAppVersionInfo', {
+    platform: Platform.OS,
+  })
+}
+
+export type PrivacyConsentStatus = {
+  account_id?: string | null
+  user_name?: string | null
+  phone_last4?: string | null
+  agree_yn?: string | null
+  agree_dt?: string | null
+}
+
+// 이 사람(account_id+user_name+phone_last4)이 개인정보(이름/휴대폰 뒷자리/GPS 위치/기기식별자)
+// 수집에 이미 동의했는지 조회합니다. device_token은 재설치 시 바뀔 수 있어 기준으로 쓰지 않습니다.
+export function fetchPrivacyConsentStatus(identity: CommuteIdentity) {
+  return api.get<PrivacyConsentStatus | null>('/Account/CommutePrivacyConsentStatus', {
+    account_id: identity.accountId,
+    user_name: identity.userName,
+    phone_last4: identity.phoneLast4,
+  })
+}
+
+// 개인정보 수집 동의를 사람(account_id+user_name+phone_last4) 기준으로 서버에 저장합니다.
+// device_token/deviceName은 어떤 기기로 동의했는지 참고용으로 함께 남깁니다.
+export function agreePrivacyConsent(identity: CommuteIdentity, deviceToken: string, deviceName: string) {
+  return api.post<MessagePayload>('/Account/CommutePrivacyConsentAgree', {
+    account_id: identity.accountId,
+    user_name: identity.userName,
+    phone_last4: identity.phoneLast4,
+    device_token: deviceToken,
+    device_name: deviceName,
   })
 }
