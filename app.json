@@ -14,7 +14,17 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "출퇴근 기록을 위해 현재 위치 권한이 필요합니다."
+          "locationWhenInUsePermission": "출퇴근 기록을 위해 현재 위치 권한이 필요합니다.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "위생점검 사진을 촬영하기 위해 카메라 권한이 필요합니다.",
+          "photosPermission": false,
+          "microphonePermission": "이 앱은 사진만 촬영하며 음성은 녹음하지 않습니다."
         }
       ],
       "./plugins/withPlayServicesAppSet.js"
@@ -23,8 +33,11 @@
       "typedRoutes": true
     },
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.thefull.thefullm"
+      "supportsTablet": false,
+      "bundleIdentifier": "com.thefull.thefullm",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.thefull.thefullm",

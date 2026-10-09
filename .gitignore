@@ -10,3 +10,6 @@ web-build
 
 expo-env.d.ts
 # @end expo-cli
+
+# 앱스토어 API 키(.p8) 보관 폴더
+key/
