@@ -1,6 +1,6 @@
 import { Redirect } from 'expo-router'
 
-// 현재 앱은 출퇴근 전용으로 운영하며 로그인과 메인 화면은 별도 경로에 보존합니다.
+// 앱 첫 진입 경로 (항상 로그인 화면부터 시작, 로그인 후 메인에서 출퇴근·위생 점검 선택)
 export default function IndexScreen() {
-  return <Redirect href="/attendance" />
+  return <Redirect href="/login" />
 }

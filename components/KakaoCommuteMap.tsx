@@ -3,6 +3,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 
 import type { AttendanceTarget } from '@/lib/attendance/api'
+import { font } from '@/lib/fonts'
 
 type KakaoCommuteMapProps = {
   target: AttendanceTarget | null
@@ -229,7 +230,7 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: 'rgba(247,247,250,0.88)',
   },
-  loadingText: { color: '#747b86', fontSize: 12, fontWeight: '700' },
+  loadingText: { color: '#747b86', fontSize: 14, fontFamily: font.bold },
   errorOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -237,5 +238,5 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: '#f7f7fa',
   },
-  errorText: { color: '#e5566b', fontSize: 12, lineHeight: 18, textAlign: 'center' },
+  errorText: { color: '#e5566b', fontSize: 14, fontFamily: font.regular, lineHeight: 20, textAlign: 'center' },
 })

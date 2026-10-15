@@ -4,17 +4,20 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
-    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run-expo.ps1 start --port 8066 --lan",
+    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run-expo.ps1 start --port 8067 --lan",
     "android": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run-expo.ps1 run:android",
     "ios": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run-expo.ps1 run:ios",
     "web": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/run-expo.ps1 start --web",
     "lint": "expo lint"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~54.0.37",
     "expo-application": "~7.0.8",
     "expo-constants": "~18.0.14",
+    "expo-dev-client": "~6.0.21",
+    "expo-font": "~14.0.12",
     "expo-image-picker": "~17.0.11",
     "expo-linking": "~8.0.12",
     "expo-location": "~19.0.8",

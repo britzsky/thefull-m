@@ -1,5 +1,20 @@
+import Constants from 'expo-constants'
+
+// 로컬 개발 API 주소의 호스트를 Expo 개발 서버 PC 주소로 교체
+// 10.0.2.2는 안드로이드 에뮬레이터 전용이라, 실기기·아이폰에서도 같은 PC 백엔드로 붙도록 개발 서버 호스트 사용
+function resolveLocalApiUrl(localUrl: string) {
+  const devServerHost = Constants.expoConfig?.hostUri?.split(':')[0]
+
+  if (!__DEV__ || !devServerHost) {
+    return localUrl
+  }
+
+  // 프로토콜·포트·경로는 유지하고 호스트만 교체 (http://10.0.2.2:8081 → http://192.168.x.x:8081)
+  return localUrl.replace(/^(https?:\/\/)[^/:]+/, `$1${devServerHost}`)
+}
+
 const DEFAULT_API_URLS = {
-  local: process.env.EXPO_PUBLIC_API_BASE_URL_LOCAL || 'http://localhost:9000',
+  local: resolveLocalApiUrl(process.env.EXPO_PUBLIC_API_BASE_URL_LOCAL || 'http://localhost:9000'),
   test: process.env.EXPO_PUBLIC_API_BASE_URL_TEST || 'http://172.30.1.48:8080/api',
   real: process.env.EXPO_PUBLIC_API_BASE_URL_REAL || 'https://52.64.151.137:8080/api',
 } as const

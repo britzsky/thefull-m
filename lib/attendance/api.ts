@@ -6,6 +6,8 @@ export type CommuteIdentity = {
   accountId: string
   userName: string
   phoneLast4: string
+  // 본사/영양사 계정으로 로그인한 경우의 사용자 아이디 (조리사/조리원은 없음, 서버는 기기 승인 대신 계정 확인)
+  userId?: string
 }
 
 export type AttendanceAccount = {
@@ -72,11 +74,11 @@ export async function fetchAttendanceAccounts() {
           account_name: String(item.account_name ?? '').trim(),
         }))
         .filter((item) => item.account_id && item.account_name)
-        // ✅ 가나다순 정렬 - API가 정렬해서 안 주므로 프론트에서 처리 (본사는 아래서 맨 앞에 고정)
+        // ✅ 가나다순 정렬 - API가 정렬해서 안 주므로 프론트에서 처리
         .sort((a, b) => a.account_name.localeCompare(b.account_name, 'ko'))
     : []
 
-  return [{ account_id: 'HQ', account_name: '본사' }, ...accounts]
+  return accounts
 }
 
 export async function fetchAccountCoordinate(accountId: string) {
@@ -101,11 +103,40 @@ export function fetchDeviceInfo(identity: CommuteIdentity) {
   })
 }
 
-export function fetchTodayStatus(identity: CommuteIdentity) {
+export type RegisteredIdentity = {
+  accountId: string
+  userName: string
+  phoneLast4: string
+}
+
+// 이 기기로 이미 승인받은 사람(이름/뒷자리)과 근무지 목록을 조회합니다(최근 승인 순).
+// 이름/뒷자리를 비워 보내면 기기 토큰만으로 조회합니다(앱 진입 시 자동 입력용).
+export async function fetchRegisteredIdentities(deviceToken: string, userName = '', phoneLast4 = '') {
+  const response = await api.get<Array<Record<string, unknown>>>('/Account/CommuteRegisteredAccountList', {
+    device_token: deviceToken,
+    user_name: userName,
+    phone_last4: phoneLast4,
+  })
+
+  return Array.isArray(response)
+    ? response
+        .map((item) => ({
+          accountId: String(item.account_id ?? '').trim(),
+          userName: String(item.user_name ?? '').trim(),
+          phoneLast4: String(item.phone_last4 ?? '').trim(),
+        }))
+        .filter((item) => item.accountId)
+    : []
+}
+
+// 폰 날짜(t_date) 기준 오늘 출퇴근 상태 조회 (로그인 사용자는 user_id로 동명이인 구분)
+export function fetchTodayStatus(identity: CommuteIdentity, date: string) {
   return api.get<TodayStatus>('/Account/CommuteTodayStatus', {
     account_id: identity.accountId,
     user_name: identity.userName,
     phone_last4: identity.phoneLast4,
+    user_id: identity.userId ?? '',
+    t_date: date,
   })
 }
 
@@ -145,7 +176,7 @@ export function requestCommuteDevice(
   })
 }
 
-function getLocalDateAndTime() {
+export function getLocalDateAndTime() {
   const now = new Date()
   const year = now.getFullYear()
   const month = `${now.getMonth() + 1}`.padStart(2, '0')
@@ -173,6 +204,7 @@ export function submitCommute(
     account_id: identity.accountId,
     user_name: identity.userName,
     phone_last4: identity.phoneLast4,
+    user_id: identity.userId ?? '',
     device_token: deviceToken,
     device_name: deviceName,
     t_date: date,
