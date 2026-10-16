@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Keyboard,
   Platform,
   Pressable,
@@ -48,8 +49,11 @@ import { font } from '@/lib/fonts'
 // 조리사/조리원: 이름·휴대폰 뒷자리·근무지 + 기기 승인, 본사/영양사: the_full 계정 아이디·비밀번호
 
 // 로그인 구분 라디오 목록
+// 키보드 윗변과 입력칸 사이 여유 간격 (안드로이드는 키보드 위 추천 단어 줄까지 고려)
+const KEYBOARD_GAP = Platform.OS === 'android' ? 64 : 16
+
 const loginModes: { mode: LoginMode; label: string }[] = [
-  { mode: 'cook', label: '조리사/조리원' },
+  { mode: 'cook', label: '조리사' },
   { mode: 'staff', label: '본사/영양사' },
 ]
 
@@ -100,6 +104,59 @@ export default function LoginScreen() {
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false)
   // 근무지 검색 입력칸 (화살표 버튼으로 목록 열고 닫을 때 포커스 이동)
   const accountInputRef = useRef<TextInput>(null)
+  // 근무지 검색 결과 목록 (근무지 입력 중에는 목록 아래 끝까지 키보드 위로 보이게 스크롤)
+  const accountDropdownRef = useRef<View>(null)
+
+  // 로그인 입력 스크롤 영역과 현재 스크롤 위치 (가려진 입력칸을 위로 올릴 때 사용)
+  const bodyScrollRef = useRef<ScrollView>(null)
+  const bodyScrollYRef = useRef(0)
+  // 키보드 윗변 화면 좌표 (키보드가 없으면 null)와 키보드 높이 (안드로이드 아래 여백 계산용)
+  const keyboardTopRef = useRef<number | null>(null)
+  const [keyboardHeight, setKeyboardHeight] = useState(0)
+
+  // 입력 중인 칸이 키보드에 가려지면 가려진 만큼 로그인 화면을 위로 스크롤
+  // 근무지 입력 중이고 검색 목록이 열려 있으면 목록 아래 끝 기준으로 판단
+  // 호출 시점(포커스·키보드 표시·목록 크기 변경) 직후 레이아웃이 반영되도록 다음 프레임에 측정
+  const keepFocusedInputVisible = useCallback(() => {
+    requestAnimationFrame(() => {
+      const keyboardTop = keyboardTopRef.current
+      const input = TextInput.State.currentlyFocusedInput()
+      if (keyboardTop === null || !input || !bodyScrollRef.current) return
+      const target = input === accountInputRef.current && accountDropdownRef.current ? accountDropdownRef.current : input
+
+      target.measureInWindow((_x, y, _width, height) => {
+        const overflow = y + height + KEYBOARD_GAP - keyboardTop
+        if (overflow > 0) {
+          bodyScrollRef.current?.scrollTo({ y: bodyScrollYRef.current + overflow, animated: true })
+        }
+      })
+    })
+  }, [])
+
+  // 키보드가 올라오면 위치 기록 후 입력 중인 칸이 보이게 스크롤, 내려가면 초기화
+  // (안드로이드 edge-to-edge는 키보드가 화면을 줄이지 않고 덮으므로 직접 처리)
+  useEffect(() => {
+    const showListener = Keyboard.addListener('keyboardDidShow', (event) => {
+      // 안드로이드는 키보드 위치 값과 화면 좌표 기준이 기기마다 어긋나므로(상태바·내비게이션 바)
+      // 두 방식으로 구한 키보드 윗변 중 더 위쪽 값을 사용
+      keyboardTopRef.current =
+        Platform.OS === 'android'
+          ? Math.min(event.endCoordinates.screenY, Dimensions.get('window').height - event.endCoordinates.height)
+          : event.endCoordinates.screenY
+      setKeyboardHeight(event.endCoordinates.height)
+      // 안드로이드 하단 여백이 화면에 반영된 뒤 스크롤해야 맨 아래 입력칸·로그인 버튼까지 올라감
+      setTimeout(keepFocusedInputVisible, 150)
+    })
+    const hideListener = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTopRef.current = null
+      setKeyboardHeight(0)
+    })
+
+    return () => {
+      showListener.remove()
+      hideListener.remove()
+    }
+  }, [keepFocusedInputVisible])
 
   // 아이디 입력값
   const [userId, setUserId] = useState('')
@@ -186,6 +243,14 @@ export default function LoginScreen() {
     }
   }
 
+  // 근무지 입력 지우기 (검색어·선택 근무지 초기화 후 바로 다시 검색할 수 있게 입력칸 포커스)
+  const handleClearAccount = () => {
+    setAccountQuery('')
+    setSelectedAccount(null)
+    setAccountDropdownOpen(true)
+    accountInputRef.current?.focus()
+  }
+
   // 검색 목록에서 근무지 선택
   const handleSelectAccount = (account: AttendanceAccount) => {
     setSelectedAccount(account)
@@ -207,7 +272,8 @@ export default function LoginScreen() {
   const handleCookLogin = async () => {
     Keyboard.dismiss()
 
-    const userName = cookName.trim()
+    // 이름은 띄어쓰기·공백 없이 저장 (이전에 공백 포함으로 저장된 미리 채우기 값 포함)
+    const userName = cookName.replace(/\s/g, '')
     if (!userName) {
       Alert.alert('입력 확인', '이름을 입력해 주세요.')
       return
@@ -374,10 +440,19 @@ export default function LoginScreen() {
 
         {/* 로그인 입력 스크롤 영역 */}
         <ScrollView
-          contentContainerStyle={styles.body}
+          ref={bodyScrollRef}
+          contentContainerStyle={[
+            styles.body,
+            // 안드로이드는 키보드가 내용을 덮으므로 키보드 높이만큼 아래 여백 (iOS는 자동 인셋 사용)
+            Platform.OS === 'android' && keyboardHeight > 0 ? { paddingBottom: keyboardHeight + KEYBOARD_GAP + 24 } : null,
+          ]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           automaticallyAdjustKeyboardInsets
+          scrollEventThrottle={16}
+          onScroll={(event) => {
+            bodyScrollYRef.current = event.nativeEvent.contentOffset.y
+          }}
         >
           {/* 로그인 구분 라디오 (조리사/조리원, 본사/영양사) */}
           <View style={styles.modeRow}>
@@ -403,11 +478,11 @@ export default function LoginScreen() {
           {/* 로그인 안내 문구 */}
           <View style={styles.bodyHead}>
             <Text style={styles.bodyHeadTitle}>
-              {loginMode === 'cook' ? '조리사/조리원 로그인' : '더채움 계정 로그인'}
+              {loginMode === 'cook' ? '조리사 로그인' : '더채움 계정 로그인'}
             </Text>
             <Text style={styles.bodyHeadDescription}>
               {loginMode === 'cook'
-                ? '이름, 휴대폰 뒷자리, 근무지를 입력해 주세요. 처음 쓰는 기기는 관리자 승인 후 로그인됩니다.'
+                ? '이름, 휴대폰 뒷자리, 근무지를 입력해 주세요. \n처음 쓰는 기기는 관리자 승인 후 로그인됩니다.'
                 : '아이디와 비밀번호를 입력해 주세요.'}
             </Text>
           </View>
@@ -419,10 +494,11 @@ export default function LoginScreen() {
               <Text style={styles.inputLabel}>이름</Text>
               <TextInput
                 value={cookName}
-                onChangeText={setCookName}
+                onChangeText={(text) => setCookName(text.replace(/\s/g, ''))}
                 placeholder="이름을 입력하세요"
                 placeholderTextColor="#9aa7b3"
                 autoCorrect={false}
+                onFocus={keepFocusedInputVisible}
                 style={styles.input}
               />
             </View>
@@ -437,6 +513,7 @@ export default function LoginScreen() {
                 placeholderTextColor="#9aa7b3"
                 keyboardType="number-pad"
                 maxLength={4}
+                onFocus={keepFocusedInputVisible}
                 style={styles.input}
               />
             </View>
@@ -449,13 +526,24 @@ export default function LoginScreen() {
                 <TextInput
                   ref={accountInputRef}
                   value={accountQuery}
-                  onFocus={() => setAccountDropdownOpen(true)}
+                  onFocus={() => {
+                    setAccountDropdownOpen(true)
+                    keepFocusedInputVisible()
+                  }}
                   onChangeText={handleAccountQueryChange}
                   placeholder="거래처 검색"
                   placeholderTextColor="#9aa7b3"
                   autoCorrect={false}
                   style={[styles.input, styles.accountSearchInput, selectedAccount && styles.inputSelected]}
                 />
+                {/* 근무지 입력 지우기 버튼 (입력값이 있을 때만 표시) */}
+                {accountQuery ? (
+                  <Pressable hitSlop={6} style={styles.clearButton} onPress={handleClearAccount}>
+                    <View style={styles.clearIcon}>
+                      <Text style={styles.clearIconText}>✕</Text>
+                    </View>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   hitSlop={10}
                   style={styles.dropdownArrowButton}
@@ -475,7 +563,7 @@ export default function LoginScreen() {
               </View>
               {/* 근무지 검색 결과 목록 */}
               {accountDropdownOpen ? (
-                <View style={styles.accountDropdown}>
+                <View ref={accountDropdownRef} style={styles.accountDropdown} onLayout={keepFocusedInputVisible}>
                   {filteredAccounts.length > 0 ? (
                     <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="always" style={styles.accountScroll}>
                       {filteredAccounts.map((account) => (
@@ -524,6 +612,7 @@ export default function LoginScreen() {
                 placeholderTextColor="#9aa7b3"
                 autoCapitalize="none"
                 autoCorrect={false}
+                onFocus={keepFocusedInputVisible}
                 style={styles.input}
               />
             </View>
@@ -539,6 +628,7 @@ export default function LoginScreen() {
                 secureTextEntry
                 autoCapitalize="none"
                 autoCorrect={false}
+                onFocus={keepFocusedInputVisible}
                 style={styles.input}
               />
             </View>
@@ -747,9 +837,35 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'center',
   },
-  // 화살표 버튼과 글자가 겹치지 않도록 오른쪽 여백
+  // 지우기·화살표 버튼과 글자가 겹치지 않도록 오른쪽 여백
   accountSearchInput: {
-    paddingRight: 44,
+    paddingRight: 72,
+  },
+  // 근무지 입력 지우기 버튼 (화살표 버튼 왼쪽, 세로 가운데)
+  clearButton: {
+    position: 'absolute',
+    right: 40,
+    top: 0,
+    bottom: 0,
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // 지우기 버튼 회색 원
+  clearIcon: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#c3ccd4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearIconText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+    includeFontPadding: false,
+    textAlignVertical: 'center',
   },
   // 근무지 목록 열기/닫기 화살표 버튼 (입력칸 오른쪽 세로 가운데)
   dropdownArrowButton: {

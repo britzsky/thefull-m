@@ -21,8 +21,7 @@ import BrandHeader from '@/components/BrandHeader'
 import { font } from '@/lib/fonts'
 import type { HygieneCategory } from '@/lib/hygiene/api'
 
-// 위생 점검 카테고리 관리·수정 화면 (Figma V6 카테고리 관리 / 카테고리 수정)
-
+// 위생 점검 카테고리 관리·수정 화면
 // 기본 카테고리별 관리 포인트 기본 문구 (관리 포인트가 저장되지 않은 기본 카테고리에 사용)
 export const categoryManagePoints: Record<string, string> = {
   preservedFood: '보존식 라벨 및 중량 확인',
@@ -372,8 +371,9 @@ export default function HygieneCategoryEditor({
 
         {editing ? (
           <>
-            {/* 카테고리 이름·설명·표시 옵션 수정 스크롤 영역 */}
+            {/* 카테고리 이름·설명·표시 옵션 수정 스크롤 영역 (key로 관리 목록과 구분해 항상 맨 위부터 표시) */}
             <ScrollView
+              key="edit"
               style={styles.body}
               contentContainerStyle={styles.editBodyContent}
               keyboardShouldPersistTaps="handled"
@@ -503,7 +503,7 @@ export default function HygieneCategoryEditor({
         ) : (
           <>
             {/* 카테고리 순서·숨김·수정 목록 스크롤 영역 */}
-            <ScrollView style={styles.body} contentContainerStyle={styles.manageBodyContent} scrollEnabled={!drag}>
+            <ScrollView key="manage" style={styles.body} contentContainerStyle={styles.manageBodyContent} scrollEnabled={!drag}>
               {/* 관리 화면 제목·안내 문구 */}
               <View style={styles.intro}>
                 <Text style={styles.introTitle}>관리 항목 편집</Text>

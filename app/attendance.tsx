@@ -164,6 +164,8 @@ export default function AttendanceScreen() {
   // 화면/요청별 로딩 상태
   const [isScreenLoading, setIsScreenLoading] = useState(true)
   const [isSubmittingAttendance, setIsSubmittingAttendance] = useState(false)
+  // 출퇴근 저장 진행 중 여부 (버튼 비활성화가 반영되기 전 연속 터치 방지)
+  const submittingAttendanceRef = useRef(false)
 
   // 서버가 내려준 강제 업데이트 요구 버전 정보(없거나 현재 버전과 같으면 통과)
   const [appVersionInfo, setAppVersionInfo] = useState<AppVersionInfo | null>(null)
@@ -578,8 +580,23 @@ export default function AttendanceScreen() {
     if (geofenceOk) setMapAttentionNeeded(false)
   }, [geofenceOk])
 
-  // 출근/퇴근 기록 저장 처리
+  // 출근/퇴근 버튼 처리 (이미 저장 중이면 무시)
   const submitAttendance = async (action: CommuteAction) => {
+    if (submittingAttendanceRef.current) {
+      return
+    }
+
+    submittingAttendanceRef.current = true
+
+    try {
+      await saveAttendance(action)
+    } finally {
+      submittingAttendanceRef.current = false
+    }
+  }
+
+  // 출근/퇴근 기록 저장 처리
+  const saveAttendance = async (action: CommuteAction) => {
     if (!confirmedIdentity || !attendanceTarget || !deviceToken || !canCommute) {
       Alert.alert('출퇴근 불가', 'ERP에서 현재 기기의 등록 승인 상태를 확인해 주세요.')
       return

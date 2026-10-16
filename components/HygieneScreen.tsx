@@ -4,8 +4,11 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Dimensions,
   Image,
+  Keyboard,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -78,6 +81,10 @@ type HygienePair = {
   beforeChanged: boolean
   // 저장 후 조치 후 쪽(사진·조치 메모) 변경 여부 → 저장 시 mod_dt·mod_user_id 갱신
   afterChanged: boolean
+  // 구분 없음 행 여부 (카테고리 없이 웹에서 등록한 예전 행: 조치 내용만 있어도 완료, 비고는 행별 유지)
+  noCategory: boolean
+  // 행 비고 (구분 없음 행은 저장 시 이 값을 그대로 보냄)
+  note: string
 }
 
 // 카테고리 한 건의 점검 기록
@@ -103,11 +110,33 @@ const statusTone: Record<HygieneStatus, { bg: string; fg: string }> = {
 }
 
 // 아직 기록이 없는 카테고리의 빈 점검 기록
+// 저장 후 목록 재조회 실패 안내 문구
+const RELOAD_FAILED_TITLE = '저장 완료'
+const RELOAD_FAILED_MESSAGE =
+  '저장은 완료됐지만 목록을 불러오지 못했습니다.\n위생 점검 화면을 나갔다가 다시 들어와 주세요.'
+
 const EMPTY_RECORD: HygieneCategoryRecord = {
   pairs: [],
   remark: '',
   deletedIdxs: [],
   dirty: false,
+}
+
+// 입력 중인 칸과 키보드 윗변 사이 여유 (안드로이드는 키보드 높이에 빠지기도 하는 자동완성 줄까지 고려)
+const KEYBOARD_GAP = Platform.OS === 'android' ? 64 : 16
+
+// 구분 없음(카테고리 없는 예전 웹 등록 행) 화면용 카테고리 key, 저장 시 빈 category_key로 변환
+const NO_CATEGORY_KEY = '__none'
+
+// 구분 없음 화면용 카테고리 (기록이 있을 때만 카드·칩으로 표시, 카테고리 설정에는 저장하지 않음)
+const NO_CATEGORY: HygieneCategory = {
+  key: NO_CATEGORY_KEY,
+  title: '구분 없음',
+  description: '',
+  managePoint: '',
+  visible: true,
+  showOnMain: true,
+  showStatus: true,
 }
 
 // 서버 사진 경로를 화면용 사진으로 변환 (경로가 없으면 null)
@@ -120,7 +149,8 @@ function toRecordMap(rows: HygieneCheckRow[]) {
   const recordMap: Record<string, HygieneCategoryRecord> = {}
 
   for (const row of rows) {
-    const record = recordMap[row.category_key] ?? { ...EMPTY_RECORD, pairs: [] }
+    const recordKey = row.category_key || NO_CATEGORY_KEY
+    const record = recordMap[recordKey] ?? { ...EMPTY_RECORD, pairs: [] }
 
     // 비고는 첫 번째 항목 행의 note 사용
     if (record.pairs.length === 0) {
@@ -140,8 +170,10 @@ function toRecordMap(rows: HygieneCheckRow[]) {
       modUserName: row.mod_user_name ?? '',
       beforeChanged: false,
       afterChanged: false,
+      noCategory: !row.category_key,
+      note: row.note ?? '',
     })
-    recordMap[row.category_key] = record
+    recordMap[recordKey] = record
   }
 
   return recordMap
@@ -166,7 +198,9 @@ function formatStamp(date: string, userName: string) {
 }
 
 // 항목 조치 완료 여부 (조치 후 사진과 조치 메모가 모두 있는 경우)
+// 구분 없음 행은 조치 내용만 있어도 완료 (웹 위생점검과 같은 기준)
 function isPairDone(pair: HygienePair) {
+  if (pair.noCategory) return Boolean(pair.actionNote.trim())
   return Boolean(pair.afterPhoto && pair.actionNote.trim())
 }
 
@@ -185,10 +219,11 @@ function getCategoryStatus(record: HygieneCategoryRecord): HygieneStatus {
 }
 
 // 조치 전·후 사진이 있는 항목 수 (요약 카드 전/후 배지용)
+// 구분 없음 행은 사진 또는 내용(전: 전달 메모, 후: 조치 메모)이 있으면 셈 (웹 위생점검과 같은 기준)
 function getPhotoCounts(record: HygieneCategoryRecord) {
   return {
-    before: record.pairs.filter((pair) => pair.beforePhoto).length,
-    after: record.pairs.filter((pair) => pair.afterPhoto).length,
+    before: record.pairs.filter((pair) => pair.beforePhoto || (pair.noCategory && pair.memo.trim())).length,
+    after: record.pairs.filter((pair) => pair.afterPhoto || (pair.noCategory && pair.actionNote.trim())).length,
   }
 }
 
@@ -226,6 +261,7 @@ function PairSide({
   locked = false,
   onPressPhoto,
   onChangeNote,
+  onNoteResize,
 }: {
   side: PhotoSide
   number: number
@@ -237,6 +273,8 @@ function PairSide({
   locked?: boolean
   onPressPhoto: () => void
   onChangeNote: (value: string) => void
+  // 메모를 여러 줄 입력해 입력칸 높이가 바뀔 때 (키보드에 가려지지 않게 화면 스크롤)
+  onNoteResize?: () => void
 }) {
   // 조치 전 / 조치 후 구분 문구
   const isBefore = side === 'before'
@@ -284,18 +322,25 @@ function PairSide({
         )}
       </Pressable>
 
-      {/* 전달 메모 / 조치 메모 입력 */}
+      {/* 전달 메모 / 조치 메모 (잠금 칸은 입력칸 대신 일반 글로 전체 표시) */}
       <Text style={styles.pairNoteLabel}>{isBefore ? '전달 메모' : '조치 메모'}</Text>
-      <TextInput
-        value={note}
-        onChangeText={onChangeNote}
-        placeholder={locked ? '' : isBefore ? '확인할 내용을 입력해 주세요.' : '조치 내용을 입력해 주세요.'}
-        placeholderTextColor="#9aa7b3"
-        editable={!locked}
-        multiline
-        textAlignVertical="top"
-        style={[styles.pairNoteInput, locked && styles.pairNoteInputLocked]}
-      />
+      {locked ? (
+        <Text selectable style={[styles.pairNoteText, !note.trim() && styles.pairNoteTextEmpty]}>
+          {note.trim() || '내용 없음'}
+        </Text>
+      ) : (
+        <TextInput
+          value={note}
+          onChangeText={onChangeNote}
+          placeholder={isBefore ? '확인할 내용을 입력해 주세요.' : '조치 내용을 입력해 주세요.'}
+          placeholderTextColor="#9aa7b3"
+          multiline
+          textAlignVertical="top"
+          onContentSizeChange={onNoteResize}
+          onFocus={onNoteResize}
+          style={styles.pairNoteInput}
+        />
+      )}
     </View>
   )
 }
@@ -308,6 +353,7 @@ function PairCard({
   onPressPhoto,
   onChangePair,
   onDelete,
+  onNoteResize,
 }: {
   number: number
   pair: HygienePair
@@ -316,9 +362,12 @@ function PairCard({
   onPressPhoto: (side: PhotoSide) => void
   onChangePair: (patch: Partial<HygienePair>) => void
   onDelete: () => void
+  // 메모 입력칸 높이 변경 알림 (키보드 가림 방지 스크롤)
+  onNoteResize?: () => void
 }) {
   return (
-    <View style={styles.pairCard}>
+    // 항목 카드 (조치가 끝나지 않은 항목은 주황 테두리)
+    <View style={[styles.pairCard, !isPairDone(pair) && styles.cardNeedAction]}>
       {/* 항목 번호와 삭제 버튼 줄 */}
       <View style={styles.pairCardHeader}>
         <View style={styles.pairNumber}>
@@ -344,6 +393,7 @@ function PairCard({
           locked={afterOnly}
           onPressPhoto={() => onPressPhoto('before')}
           onChangeNote={(value) => onChangePair({ memo: value })}
+          onNoteResize={onNoteResize}
         />
         <MaterialCommunityIcons name="arrow-right" size={18} color="#1593c4" style={styles.pairArrow} />
         <PairSide
@@ -354,6 +404,7 @@ function PairCard({
           stamp={pair.afterPhoto || pair.actionNote ? formatStamp(pair.modDt, pair.modUserName) : ''}
           onPressPhoto={() => onPressPhoto('after')}
           onChangeNote={(value) => onChangePair({ actionNote: value })}
+          onNoteResize={onNoteResize}
         />
       </View>
     </View>
@@ -367,12 +418,15 @@ function NoteField({
   placeholder,
   minHeight,
   onChangeText,
+  onResize,
 }: {
   label: string
   value: string
   placeholder: string
   minHeight: number
   onChangeText: (value: string) => void
+  // 여러 줄 입력으로 입력칸 높이가 바뀔 때 (키보드 가림 방지 스크롤)
+  onResize?: () => void
 }) {
   return (
     // 입력칸 묶음 (라벨 + 여러 줄 입력)
@@ -385,6 +439,8 @@ function NoteField({
         placeholderTextColor="#9aa7b3"
         multiline
         textAlignVertical="top"
+        onContentSizeChange={onResize}
+        onFocus={onResize}
         style={[styles.fieldInput, { minHeight }]}
       />
     </View>
@@ -421,6 +477,10 @@ export default function HygieneScreen() {
   const [isLoading, setIsLoading] = useState(true)
   // 점검·카테고리 저장 중 여부 (저장 버튼 중복 클릭 방지)
   const [isSaving, setIsSaving] = useState(false)
+  // 점검 기록 저장 진행 중 여부 (렌더 전 연속 터치로 신규 행이 두 번 INSERT되는 것 방지)
+  const savingRecordsRef = useRef(false)
+  // 저장은 됐지만 목록 재조회에 실패한 카테고리 key (다음 저장 전에 먼저 다시 불러옴)
+  const reloadPendingKeysRef = useRef<string[]>([])
   // 카테고리 설정 (이름·순서·숨김·표시 옵션)
   const [categories, setCategories] = useState<HygieneCategory[]>(initialCategories)
   // 카테고리별 점검 기록 (조치 전·후 항목 목록·비고, 기록이 없는 카테고리는 EMPTY_RECORD로 취급)
@@ -435,6 +495,55 @@ export default function HygieneScreen() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   // 사진 크게 보기 대상 (카테고리·항목·처음 보여줄 사진 구분, null이면 닫힘)
   const [viewer, setViewer] = useState<{ categoryKey: string; pairId: string; side: PhotoSide } | null>(null)
+  // 상세 화면 사진·메모 스크롤 영역과 현재 스크롤 위치 (입력칸 가림 방지 스크롤 계산용)
+  const detailScrollRef = useRef<ScrollView>(null)
+  const detailScrollYRef = useRef(0)
+  // 키보드 윗변의 화면 y 좌표 (키보드가 없으면 null), 안드로이드 하단 여백용 키보드 높이
+  const keyboardTopRef = useRef<number | null>(null)
+  const [keyboardHeight, setKeyboardHeight] = useState(0)
+
+  // 입력 중인 칸이 키보드에 가려지면 가려진 만큼 상세 화면을 위로 스크롤
+  // 호출 시점(포커스·줄 추가·키보드 표시) 직후 레이아웃이 반영되도록 다음 프레임에 측정
+  const keepFocusedInputVisible = useCallback(() => {
+    requestAnimationFrame(() => {
+      const keyboardTop = keyboardTopRef.current
+      const input = TextInput.State.currentlyFocusedInput()
+      if (keyboardTop === null || !input || !detailScrollRef.current) return
+
+      input.measureInWindow((_x, y, _width, height) => {
+        const overflow = y + height + KEYBOARD_GAP - keyboardTop
+        if (overflow > 0) {
+          detailScrollRef.current?.scrollTo({ y: detailScrollYRef.current + overflow, animated: true })
+        }
+      })
+    })
+  }, [])
+
+  // 키보드가 올라오면 위치 기록 후 입력 중인 칸이 보이게 스크롤, 내려가면 초기화
+  // (안드로이드 edge-to-edge는 키보드가 화면을 줄이지 않고 덮으므로 직접 처리)
+  useEffect(() => {
+    const showListener = Keyboard.addListener('keyboardDidShow', (event) => {
+      // 안드로이드는 키보드 위치 값과 화면 좌표 기준이 기기마다 어긋나므로(상태바·내비게이션 바)
+      // 두 방식으로 구한 키보드 윗변 중 더 위쪽 값을 사용
+      keyboardTopRef.current =
+        Platform.OS === 'android'
+          ? Math.min(event.endCoordinates.screenY, Dimensions.get('window').height - event.endCoordinates.height)
+          : event.endCoordinates.screenY
+      setKeyboardHeight(event.endCoordinates.height)
+      // 안드로이드 하단 여백이 화면에 반영된 뒤 스크롤해야 맨 아래 비고까지 올라감
+      setTimeout(keepFocusedInputVisible, 150)
+    })
+    const hideListener = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardTopRef.current = null
+      setKeyboardHeight(0)
+    })
+
+    return () => {
+      showListener.remove()
+      hideListener.remove()
+    }
+  }, [keepFocusedInputVisible])
+
   // 상세 화면 카테고리 칩 가로 스크롤 (선택 칩을 화면 안으로 이동)
   const chipBarRef = useRef<ScrollView>(null)
   // 칩 가로 스크롤 영역 폭과 칩별 위치·폭 (선택 칩 가운데 정렬 계산용)
@@ -563,7 +672,9 @@ export default function HygieneScreen() {
               }))
             : initialCategories
         )
-        savedRecordsRef.current = toRecordMap(filterRowsByMonth(checkRows, viewYear, viewMonth))
+        // 현장 계정(영양사·조리사/조리원)은 연·월 구분 없이 누적 전체, 본사 계정은 선택한 연·월
+        savedRecordsRef.current = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+        reloadPendingKeysRef.current = []
         setRecords(savedRecordsRef.current)
         setSelectedKey(null)
         setActiveFilter('전체')
@@ -581,10 +692,15 @@ export default function HygieneScreen() {
     return () => {
       active = false
     }
-  }, [accountId, viewYear, viewMonth])
+  }, [accountId, viewYear, viewMonth, isFieldUser])
 
   // 숨김 처리되지 않은 사용 중 카테고리
-  const activeCategories = useMemo(() => categories.filter((category) => category.visible), [categories])
+  // 구분 없음 기록이 있으면 맨 뒤에 구분 없음 카테고리 추가
+  const hasNoCategoryRecords = (records[NO_CATEGORY_KEY]?.pairs.length ?? 0) > 0
+  const activeCategories = useMemo(
+    () => [...categories.filter((category) => category.visible), ...(hasNoCategoryRecords ? [NO_CATEGORY] : [])],
+    [categories, hasNoCategoryRecords]
+  )
 
   // 헤더 표시용 점검 대상 거래처명
   const accountName = accounts.find((account) => account.account_id === accountId)?.account_name ?? ''
@@ -626,27 +742,28 @@ export default function HygieneScreen() {
     [activeCategories, records]
   )
 
-  // 상태별 카테고리 개수와 전체 진행률
+  // 전체 점검 현황 (항목 단위 완료·조치 필요 건수와 진행률, 진행률 = 전체 항목 중 조치 완료 비율)
+  // overallStatus는 상단 헤더 상태 표시용으로 카테고리 상태 기준 판정
   const summary = useMemo(() => {
+    const pairs = activeCategories.flatMap((category) => (records[category.key] ?? EMPTY_RECORD).pairs)
+    const doneCount = pairs.filter((pair) => isPairDone(pair)).length
+    const pendingCount = pairs.length - doneCount
+
     const statuses = Object.values(statusMap)
-    const doneCount = statuses.filter((status) => status === '완료').length
-    const pendingCount = statuses.filter((status) => status === '조치 필요').length
-    const uncheckedCount = statuses.filter((status) => status === '미점검').length
     const overallStatus: HygieneStatus =
-      statuses.length > 0 && doneCount === statuses.length
+      statuses.length > 0 && statuses.every((status) => status === '완료')
         ? '완료'
-        : uncheckedCount === statuses.length
+        : statuses.every((status) => status === '미점검')
           ? '미점검'
           : '조치 필요'
 
     return {
       doneCount,
       pendingCount,
-      uncheckedCount,
       overallStatus,
-      percent: statuses.length > 0 ? Math.round((doneCount / statuses.length) * 100) : 0,
+      percent: pairs.length > 0 ? Math.round((doneCount / pairs.length) * 100) : 0,
     }
-  }, [statusMap])
+  }, [activeCategories, records, statusMap])
 
   // 전체 요약 카드 표시 대상 카테고리 (메인 표시 옵션 + 상태 필터)
   const visibleCategories = activeCategories.filter(
@@ -735,6 +852,8 @@ export default function HygieneScreen() {
           modUserName: '',
           beforeChanged: true,
           afterChanged: false,
+          noCategory: false,
+          note: '',
         },
       ],
     }))
@@ -822,8 +941,36 @@ export default function HygieneScreen() {
     return photo.path || uploadHygienePhoto(photo.uri, checkDate, accountId)
   }
 
-  // 변경된 카테고리 점검 기록 저장 후 서버 기준 재조회 (항목 한 개 = 위생관리 한 행)
+  // 점검 기록 저장 요청 처리 (이미 저장 중이면 무시)
   const saveRecords = async (categoryKeys: string[]) => {
+    if (savingRecordsRef.current) {
+      return false
+    }
+
+    savingRecordsRef.current = true
+
+    try {
+      // 이미 저장된 카테고리는 다시 불러온 뒤 이번 저장 대상에서 제외 (이 함수의 records는 재조회 전 값)
+      const reloadedKeys = reloadPendingKeysRef.current
+
+      if (!(await ensureSavedRecordsReloaded())) {
+        return false
+      }
+
+      const remainingKeys = categoryKeys.filter((key) => !reloadedKeys.includes(key))
+
+      if (remainingKeys.length < categoryKeys.length && !remainingKeys.some((key) => records[key]?.dirty)) {
+        return true
+      }
+
+      return await saveChangedRecords(remainingKeys)
+    } finally {
+      savingRecordsRef.current = false
+    }
+  }
+
+  // 변경된 카테고리 점검 기록 저장 후 서버 기준 재조회 (항목 한 개 = 위생관리 한 행)
+  const saveChangedRecords = async (categoryKeys: string[]) => {
     const targets = categoryKeys.filter((key) => records[key]?.dirty)
 
     if (targets.length === 0) {
@@ -854,12 +1001,13 @@ export default function HygieneScreen() {
 
           rows.push({
             idx: pair.idx,
-            category_key: key,
+            category_key: key === NO_CATEGORY_KEY ? '' : key,
             problem_image: await resolvePhotoPath(pair.beforePhoto),
             problem_note: pair.memo,
             clean_image: await resolvePhotoPath(pair.afterPhoto),
             clean_note: pair.actionNote,
-            note: index === 0 ? record.remark : '',
+            // 구분 없음 행은 행별 비고 유지, 그 외는 카테고리 비고를 첫 행에 저장
+            note: pair.noCategory ? pair.note : index === 0 ? record.remark : '',
             ...(beforeChanged ? { reg_dt: checkDate, reg_user_id: loginUserId } : {}),
             ...(pair.afterChanged ? { mod_dt: checkDate, mod_user_id: loginUserId } : {}),
           })
@@ -869,7 +1017,7 @@ export default function HygieneScreen() {
         for (const idx of record.deletedIdxs) {
           rows.push({
             idx,
-            category_key: key,
+            category_key: key === NO_CATEGORY_KEY ? '' : key,
             problem_image: '',
             problem_note: '',
             clean_image: '',
@@ -883,26 +1031,77 @@ export default function HygieneScreen() {
       if (rows.length > 0) {
         await saveHygieneRows(accountId, rows)
       }
-
-      // 저장한 카테고리만 서버 기준으로 교체 (다른 카테고리의 저장 전 수정 내용은 유지)
-      const freshRecords = toRecordMap(filterRowsByMonth(await fetchHygieneChecks(accountId), viewYear, viewMonth))
-
-      for (const key of targets) {
-        savedRecordsRef.current[key] = freshRecords[key] ?? EMPTY_RECORD
-      }
-
-      setRecords((current) => {
-        const next = { ...current }
-
-        for (const key of targets) {
-          next[key] = freshRecords[key] ?? EMPTY_RECORD
-        }
-
-        return next
-      })
-      return true
     } catch (error) {
       Alert.alert('저장 실패', error instanceof Error ? error.message : '점검 내용 저장에 실패했습니다.')
+      setIsSaving(false)
+      return false
+    }
+
+    // 저장은 완료된 상태, 재조회 실패 시 재시도 대상으로 남김 (다시 저장하면 신규 행이 중복 INSERT되므로)
+    reloadPendingKeysRef.current = targets
+
+    try {
+      await reloadSavedRecords()
+      return true
+    } catch {
+      Alert.alert(RELOAD_FAILED_TITLE, RELOAD_FAILED_MESSAGE)
+      return false
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  // 저장한 카테고리를 서버 기준으로 다시 불러와 교체 (통신 실패 시 1초 간격 최대 3회 시도)
+  // 다른 카테고리의 저장 전 수정 내용은 유지
+  const reloadSavedRecords = async () => {
+    const keys = reloadPendingKeysRef.current
+    let checkRows: HygieneCheckRow[] | null = null
+
+    for (let attempt = 0; attempt < 3 && !checkRows; attempt += 1) {
+      try {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+        }
+        checkRows = await fetchHygieneChecks(accountId)
+      } catch (error) {
+        if (attempt === 2) {
+          throw error
+        }
+      }
+    }
+
+    const freshRecords = toRecordMap(
+      isFieldUser ? (checkRows ?? []) : filterRowsByMonth(checkRows ?? [], viewYear, viewMonth)
+    )
+
+    for (const key of keys) {
+      savedRecordsRef.current[key] = freshRecords[key] ?? EMPTY_RECORD
+    }
+
+    setRecords((current) => {
+      const next = { ...current }
+
+      for (const key of keys) {
+        next[key] = freshRecords[key] ?? EMPTY_RECORD
+      }
+
+      return next
+    })
+    reloadPendingKeysRef.current = []
+  }
+
+  // 이전 저장 후 재조회에 실패한 카테고리가 남아 있으면 먼저 다시 불러옴 (실패 시 저장 중단)
+  const ensureSavedRecordsReloaded = async () => {
+    if (reloadPendingKeysRef.current.length === 0) {
+      return true
+    }
+
+    try {
+      setIsSaving(true)
+      await reloadSavedRecords()
+      return true
+    } catch {
+      Alert.alert(RELOAD_FAILED_TITLE, RELOAD_FAILED_MESSAGE)
       return false
     } finally {
       setIsSaving(false)
@@ -1116,8 +1315,18 @@ export default function HygieneScreen() {
     )
   }
 
-  // 크게 보기 대상 항목과 항목 번호 (사진 교체·삭제 시 최신 값 반영)
-  const viewerPairs = viewer ? (records[viewer.categoryKey]?.pairs ?? []) : []
+  // 상세 화면 항목 표시 순서 (현장 계정: 조치 안 된 항목 먼저, 그다음 등록 순서)
+  // 조치 여부는 마지막 저장 상태로 판단해 입력 중에 카드 순서가 바뀌지 않게 함
+  const orderPairs = (categoryKey: string, pairs: HygienePair[]) => {
+    if (!isFieldUser) return pairs
+    const savedPairs = savedRecordsRef.current[categoryKey]?.pairs ?? []
+    const isSavedDone = (pair: HygienePair) => isPairDone(savedPairs.find((saved) => saved.id === pair.id) ?? pair)
+    return [...pairs].sort((a, b) => Number(isSavedDone(a)) - Number(isSavedDone(b)))
+  }
+  const detailPairs = selectedKey && selectedRecord ? orderPairs(selectedKey, selectedRecord.pairs) : []
+
+  // 크게 보기 대상 항목과 항목 번호 (사진 교체·삭제 시 최신 값 반영, 번호는 화면 표시 순서 기준)
+  const viewerPairs = viewer ? orderPairs(viewer.categoryKey, records[viewer.categoryKey]?.pairs ?? []) : []
   const viewerIndex = viewer ? viewerPairs.findIndex((pair) => pair.id === viewer.pairId) : -1
   const viewerPair = viewerIndex >= 0 ? viewerPairs[viewerIndex] : null
 
@@ -1177,11 +1386,20 @@ export default function HygieneScreen() {
             {/* 선택 카테고리 사진·메모 입력 스크롤 영역 */}
             <ScrollView
               key={selectedKey}
+              ref={detailScrollRef}
               style={styles.body}
-              contentContainerStyle={styles.detailBodyContent}
+              contentContainerStyle={[
+                styles.detailBodyContent,
+                // 안드로이드는 키보드가 내용을 덮으므로 키보드 높이만큼 아래 여백 (iOS는 자동 인셋 사용)
+                Platform.OS === 'android' && keyboardHeight > 0 ? { paddingBottom: keyboardHeight + KEYBOARD_GAP + 24 } : null,
+              ]}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
               automaticallyAdjustKeyboardInsets
+              scrollEventThrottle={16}
+              onScroll={(event) => {
+                detailScrollYRef.current = event.nativeEvent.contentOffset.y
+              }}
             >
               {/* 선택 카테고리 이름·사진 장수·점검일 요약 박스 */}
               <View style={styles.detailSummary}>
@@ -1237,7 +1455,7 @@ export default function HygieneScreen() {
                   </Text>
                 </View>
               ) : (
-                selectedRecord.pairs.map((pair, index) => (
+                detailPairs.map((pair, index) => (
                   <PairCard
                     key={pair.id}
                     number={index + 1}
@@ -1246,26 +1464,30 @@ export default function HygieneScreen() {
                     onPressPhoto={(side) => handlePressPhoto(selectedCategory.key, pair, side)}
                     onChangePair={(patch) => updatePair(selectedCategory.key, pair.id, patch)}
                     onDelete={() => handleDeletePair(selectedCategory.key, pair, index + 1)}
+                    onNoteResize={keepFocusedInputVisible}
                   />
                 ))
               )}
 
-              {/* 항목 추가 버튼 (누르면 바로 조치 전 사진 촬영, 현장 계정은 미표시) */}
-              {isFieldUser ? null : (
+              {/* 항목 추가 버튼 (누르면 바로 조치 전 사진 촬영, 현장 계정·구분 없음은 미표시) */}
+              {isFieldUser || selectedCategory.key === NO_CATEGORY_KEY ? null : (
                 <Pressable style={styles.addPairButton} onPress={() => void handleAddPair(selectedCategory.key)}>
                   <MaterialCommunityIcons name="camera-plus-outline" size={18} color="#1687b2" />
                   <Text style={styles.addPairText}>항목 추가</Text>
                 </Pressable>
               )}
 
-              {/* 비고 입력 (카테고리 공통, 첫 항목 행에 저장) */}
-              <NoteField
-                label="비고"
-                value={selectedRecord.remark}
-                placeholder="필요 시 다음 점검에서 다시 확인할 내용을 기록합니다."
-                minHeight={56}
-                onChangeText={(value) => updateRecord(selectedCategory.key, (record) => ({ ...record, remark: value }))}
-              />
+              {/* 비고 입력 (카테고리 공통, 첫 항목 행에 저장, 구분 없음은 행별 비고라 미표시) */}
+              {selectedCategory.key === NO_CATEGORY_KEY ? null : (
+                <NoteField
+                  label="비고"
+                  value={selectedRecord.remark}
+                  placeholder="필요 시 다음 점검에서 다시 확인할 내용을 기록합니다."
+                  minHeight={56}
+                  onChangeText={(value) => updateRecord(selectedCategory.key, (record) => ({ ...record, remark: value }))}
+                  onResize={keepFocusedInputVisible}
+                />
+              )}
             </ScrollView>
 
             {/* 전체 요약 복귀 및 카테고리 저장 하단 버튼 바 */}
@@ -1318,9 +1540,8 @@ export default function HygieneScreen() {
                   전체 점검 현황 <Text style={styles.summaryPercent}>{summary.percent}%</Text>
                 </Text>
                 <View style={styles.summaryStats}>
-                  <Badge label={`완료 ${summary.doneCount}`} {...statusTone['완료']} />
-                  <Badge label={`조치 필요 ${summary.pendingCount}`} {...statusTone['조치 필요']} />
-                  <Badge label={`미점검 ${summary.uncheckedCount}`} {...statusTone['미점검']} />
+                  <Badge label={`완료 ${summary.doneCount}건`} {...statusTone['완료']} />
+                  <Badge label={`조치 필요 ${summary.pendingCount}건`} {...statusTone['조치 필요']} />
                 </View>
               </View>
               {/* 진행률 막대 */}
@@ -1356,12 +1577,17 @@ export default function HygieneScreen() {
                 </Text>
                 {/* 조회 연·월 선택 버튼과 카테고리 편집 버튼 */}
                 <View style={styles.bodyHeadActions}>
-                  <Pressable style={styles.editButton} onPress={() => setPeriodPicker('year')}>
-                    <Text style={styles.editButtonText}>{viewYear}년 ▾</Text>
-                  </Pressable>
-                  <Pressable style={styles.editButton} onPress={() => setPeriodPicker('month')}>
-                    <Text style={styles.editButtonText}>{viewMonth}월 ▾</Text>
-                  </Pressable>
+                  {/* 연·월 선택은 본사 계정만 (현장 계정은 누적 전체) */}
+                  {isFieldUser ? null : (
+                    <>
+                      <Pressable style={styles.editButton} onPress={() => setPeriodPicker('year')}>
+                        <Text style={styles.editButtonText}>{viewYear}년 ▾</Text>
+                      </Pressable>
+                      <Pressable style={styles.editButton} onPress={() => setPeriodPicker('month')}>
+                        <Text style={styles.editButtonText}>{viewMonth}월 ▾</Text>
+                      </Pressable>
+                    </>
+                  )}
                   <Pressable style={styles.editButton} onPress={() => setIsEditingCategories(true)}>
                     <Text style={styles.editButtonText}>카테고리 편집</Text>
                   </Pressable>
@@ -1420,40 +1646,36 @@ export default function HygieneScreen() {
                       const status = statusMap[category.key]
 
                       return (
-                        // 카테고리별 요약 카드 (탭 시 상세 화면 이동)
+                        // 요약 카드 한 칸 (내용 길이와 관계없이 줄 폭의 절반 고정)
+                        <View key={category.key} style={styles.gridCell}>
+                        {/* 카테고리별 요약 카드 (탭 시 상세 화면 이동, 조치 필요 카테고리는 주황 테두리) */}
                         <Pressable
-                          key={category.key}
-                          style={styles.overviewCard}
+                          style={[styles.overviewCard, status === '조치 필요' && styles.cardNeedAction]}
                           onPress={() => setSelectedKey(category.key)}
                         >
-                          {/* 카드 상단 카테고리명(긴 이름은 한 줄 안에서 글자 크기 자동 축소)과 오른쪽 상세 보기 표시 */}
+                          {/* 카드 상단 카테고리명 (글자 크기 고정, 긴 이름은 두 줄까지) */}
                           <View style={styles.overviewCardTop}>
-                            <Text
-                              style={styles.overviewCardTitle}
-                              numberOfLines={1}
-                              adjustsFontSizeToFit
-                              minimumFontScale={0.8}
-                            >
+                            <Text style={styles.overviewCardTitle} numberOfLines={2}>
                               {category.title}
                             </Text>
-                            <Text style={styles.overviewCardLinkText}>상세 보기 ›</Text>
                           </View>
                           {/* 조치 전/후 사진 장수 배지(왼쪽)와 점검 상태 배지(오른쪽) */}
                           <View style={styles.overviewCardCounts}>
-                            <Badge label={`전 ${getPhotoCounts(record).before}`} bg="#f2f5f7" fg="#667584" />
-                            <Badge label={`후 ${getPhotoCounts(record).after}`} bg="#eef6f1" fg="#3e7652" />
+                            <Badge compact label={`전 ${getPhotoCounts(record).before}`} bg="#f2f5f7" fg="#667584" />
+                            <Badge compact label={`후 ${getPhotoCounts(record).after}`} bg="#eef6f1" fg="#3e7652" />
                             <View style={styles.gridSpacer} />
-                            {category.showStatus ? <Badge label={status} {...statusTone[status]} /> : null}
+                            {category.showStatus ? <Badge compact label={status} {...statusTone[status]} /> : null}
                           </View>
                           {/* 메모·조치 내용 요약 문구 */}
                           <Text style={styles.overviewCardHint} numberOfLines={2}>
                             {getCategoryHint(record, status)}
                           </Text>
                         </Pressable>
+                        </View>
                       )
                     })}
-                    {/* 홀수 개일 때 빈칸 채움 */}
-                    {row.length < 2 ? <View style={styles.gridSpacer} /> : null}
+                    {/* 홀수 개일 때 빈칸 채움 (카드 칸과 같은 절반 폭) */}
+                    {row.length < 2 ? <View style={styles.gridCell} /> : null}
                   </View>
                 ))
               )}
@@ -1788,9 +2010,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: font.medium,
   },
+  // 요약 카드 한 줄 (칸 좌우 여백 6씩 = 카드 사이 12, 바깥 여백은 음수 마진으로 상쇄)
   gridRow: {
     flexDirection: 'row',
-    gap: 12,
+    marginHorizontal: -6,
+  },
+  // 요약 카드 한 칸 (줄 폭의 정확히 절반, 카드 내용이 길어도 옆 칸을 밀지 않음)
+  gridCell: {
+    width: '50%',
+    paddingHorizontal: 6,
   },
   gridSpacer: {
     flex: 1,
@@ -1814,24 +2042,21 @@ const styles = StyleSheet.create({
   overviewCardTitle: {
     flex: 1,
     color: '#273542',
-    fontSize: 16,
+    fontSize: 15,
+    lineHeight: 20,
     fontFamily: font.bold,
   },
+  // 전/후·상태 배지 한 줄 (작은 배지와 좁은 간격으로 반쪽 카드 폭에 맞춤)
   overviewCardCounts: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
   overviewCardHint: {
     minHeight: 24,
     color: '#728190',
     fontSize: 12,
     fontFamily: font.regular,
-  },
-  overviewCardLinkText: {
-    color: '#1687b2',
-    fontSize: 12,
-    fontFamily: font.medium,
   },
   overviewCardLinkArrow: {
     color: '#1687b2',
@@ -2015,6 +2240,11 @@ const styles = StyleSheet.create({
     borderColor: '#dde5eb',
     backgroundColor: '#ffffff',
   },
+  // 조치 필요 카드 강조 테두리 (요약 카드·항목 카드 공통, 웹 위생점검과 같은 주황)
+  cardNeedAction: {
+    borderWidth: 2,
+    borderColor: '#f0a35c',
+  },
   pairCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2120,8 +2350,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: font.regular,
   },
-  pairNoteInputLocked: {
-    backgroundColor: '#f3f6f8',
+  // 잠금 칸 메모 글 (줄바꿈 그대로, 넉넉한 줄 간격으로 전체 표시)
+  pairNoteText: {
+    paddingHorizontal: 2,
+    color: '#344252',
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: font.regular,
+  },
+  pairNoteTextEmpty: {
+    color: '#9aa7b3',
   },
   pairEmpty: {
     gap: 4,
