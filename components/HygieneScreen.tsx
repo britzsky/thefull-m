@@ -1590,9 +1590,12 @@ export default function HygieneScreen() {
                       </Pressable>
                     </>
                   )}
-                  <Pressable style={styles.editButton} onPress={() => setIsEditingCategories(true)}>
-                    <Text style={styles.editButtonText}>카테고리 편집</Text>
-                  </Pressable>
+                  {/* 카테고리 편집은 본사 계정만 */}
+                  {isHeadOffice ? (
+                    <Pressable style={styles.editButton} onPress={() => setIsEditingCategories(true)}>
+                      <Text style={styles.editButtonText}>카테고리 편집</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               </View>
 
