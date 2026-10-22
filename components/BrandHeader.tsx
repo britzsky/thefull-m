@@ -32,12 +32,15 @@ export default function BrandHeader({
   subtitle,
   right,
   largeTitle = false,
+  centerLogo = false,
 }: {
-  title: string
+  title?: string
   subtitle?: string
   right?: ReactNode
   // 제목 크게 표시 여부 (부제목 없이 제목만 쓰는 로그인 화면용)
   largeTitle?: boolean
+  // 제목 대신 가운데에 로고 표시 여부 (로그인 화면용, 왼쪽 로고는 숨김)
+  centerLogo?: boolean
 }) {
   // 키보드 표시 여부 (완료 버튼 노출 기준)
   const isKeyboardVisible = useKeyboardVisible()
@@ -47,11 +50,15 @@ export default function BrandHeader({
     <View style={styles.header}>
       {/* 왼쪽 로고 칸 */}
       <View style={styles.logoSlot}>
-        <Image source={logoImage} style={styles.logo} />
+        {centerLogo ? null : <Image source={logoImage} style={styles.logo} />}
       </View>
-      {/* 가운데 제목·부제목 칸 */}
+      {/* 가운데 제목·부제목 칸 (centerLogo면 로고 표시) */}
       <View style={styles.center}>
-        <Text style={[styles.title, largeTitle && styles.titleLarge]}>{title}</Text>
+        {centerLogo ? (
+          <Image source={logoImage} style={styles.logoCenter} />
+        ) : (
+          <Text style={[styles.title, largeTitle && styles.titleLarge]}>{title}</Text>
+        )}
         {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
       </View>
       {/* 오른쪽 칸 (키보드 표시 중에는 완료 버튼, 그 외에는 상태 배지 등 추가 요소) */}
@@ -85,6 +92,12 @@ const styles = StyleSheet.create({
   logo: {
     width: 110,
     height: 34,
+    resizeMode: 'contain',
+  },
+  // 가운데 로고 (로그인 화면)
+  logoCenter: {
+    width: 140,
+    height: 40,
     resizeMode: 'contain',
   },
   center: {

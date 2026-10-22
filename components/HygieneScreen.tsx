@@ -1023,6 +1023,8 @@ export default function HygieneScreen() {
             clean_image: '',
             clean_note: '',
             note: '',
+            // 삭제한 사용자 아이디
+            mod_user_id: loginUserId,
             deleted: true,
           })
         }
@@ -1717,12 +1719,28 @@ export default function HygieneScreen() {
         onDelete={handleViewerDelete}
         onClose={() => setViewer(null)}
       />
+
+      {/* 저장 중 전체 화면 로딩 (사진 업로드~저장 완료까지 화면 터치 차단) */}
+      {isSaving && (
+        <View style={styles.savingOverlay}>
+          <ActivityIndicator size="large" color="#1593c4" />
+          <Text style={styles.loadingText}>저장 중입니다</Text>
+        </View>
+      )}
     </SafeAreaView>
   )
 }
 
 // 위생 점검 화면 스타일
 const styles = StyleSheet.create({
+  savingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(243, 246, 248, 0.85)',
+  },
   loadingBox: {
     flex: 1,
     alignItems: 'center',

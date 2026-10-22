@@ -435,8 +435,8 @@ export default function LoginScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       {/* 화면 전체 틀 (태블릿은 가운데 최대 폭) */}
       <View style={[styles.frame, isTablet && styles.frameTablet]}>
-        {/* 상단 로고와 화면 제목 헤더 */}
-        <BrandHeader title="로그인" largeTitle />
+        {/* 상단 가운데 로고 헤더 */}
+        <BrandHeader centerLogo />
 
         {/* 로그인 입력 스크롤 영역 */}
         <ScrollView

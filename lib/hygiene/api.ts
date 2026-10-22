@@ -1,3 +1,5 @@
+import { requireOptionalNativeModule } from 'expo'
+
 import { API_BASE_URL, api } from '@/lib/api/client'
 
 // 앱 위생점검 API (카테고리 설정은 tb_account_hygiene_category, 점검 기록은 tb_account_hygiene_management)
@@ -132,13 +134,41 @@ export async function fetchHygieneChecks(accountId: string) {
   return Array.isArray(response) ? response : []
 }
 
-// 카메라로 촬영한 사진 1장을 업로드하고 서버 사진 경로 반환 (웹 위생관리와 같은 hygiene/업로드일/거래처 폴더)
+// 업로드 사진 긴 변 최대 크기(px), 웹 위생관리 업로드 축소와 같은 기준
+const UPLOAD_MAX_SIZE = 1600
+
+// 업로드 전 사진 축소 (긴 변 최대 1600px, JPEG 80% 품질, 실패하면 원본 경로 반환)
+// 축소 모듈은 네이티브 모듈이 설치된 빌드에서만 불러옴 (없는 이전 빌드는 원본 그대로 업로드)
+async function resizeHygienePhoto(localUri: string) {
+  if (!requireOptionalNativeModule('ExpoImageManipulator')) {
+    return localUri
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ImageManipulator, SaveFormat } = require('expo-image-manipulator') as typeof import('expo-image-manipulator')
+    const original = await ImageManipulator.manipulate(localUri).renderAsync()
+    const context = ImageManipulator.manipulate(original)
+    if (Math.max(original.width, original.height) > UPLOAD_MAX_SIZE) {
+      context.resize(original.width >= original.height ? { width: UPLOAD_MAX_SIZE } : { height: UPLOAD_MAX_SIZE })
+    }
+    const resized = await context.renderAsync()
+    const result = await resized.saveAsync({ compress: 0.8, format: SaveFormat.JPEG })
+    return result.uri
+  } catch (error) {
+    console.warn('사진 축소 실패, 원본으로 업로드:', error)
+    return localUri
+  }
+}
+
+// 카메라로 촬영한 사진 1장을 축소해 업로드하고 서버 사진 경로 반환 (웹 위생관리와 같은 hygiene/업로드일/거래처 폴더)
 export async function uploadHygienePhoto(localUri: string, uploadDate: string, accountId: string) {
+  const uploadUri = await resizeHygienePhoto(localUri)
   const formData = new FormData()
   const fileName = localUri.split('/').pop() || `hygiene_${Date.now()}.jpg`
 
   // React Native FormData 파일 항목 (uri·name·type 형식)
-  formData.append('file', { uri: localUri, name: fileName, type: 'image/jpeg' } as unknown as Blob)
+  formData.append('file', { uri: uploadUri, name: fileName, type: 'image/jpeg' } as unknown as Blob)
   formData.append('type', 'hygiene')
   formData.append('gubun', uploadDate)
   formData.append('folder', accountId)

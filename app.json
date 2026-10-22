@@ -29,7 +29,16 @@
         }
       ],
       "./plugins/withPlayServicesAppSet.js",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-blank.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#f8fbff"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
