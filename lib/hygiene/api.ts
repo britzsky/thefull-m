@@ -139,7 +139,7 @@ const UPLOAD_MAX_SIZE = 1600
 
 // 업로드 전 사진 축소 (긴 변 최대 1600px, JPEG 80% 품질, 실패하면 원본 경로 반환)
 // 축소 모듈은 네이티브 모듈이 설치된 빌드에서만 불러옴 (없는 이전 빌드는 원본 그대로 업로드)
-async function resizeHygienePhoto(localUri: string) {
+export async function resizeHygienePhoto(localUri: string) {
   if (!requireOptionalNativeModule('ExpoImageManipulator')) {
     return localUri
   }

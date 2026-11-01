@@ -694,6 +694,44 @@ export default function HygieneScreen() {
     }
   }, [accountId, viewYear, viewMonth, isFieldUser])
 
+  // 처음 진입 시에는 위 거래처 조회가 불러오므로 화면 이동 재조회는 건너뜀
+  const isFirstViewRef = useRef(true)
+
+  // 카테고리 상세 진입·요약 복귀 시 점검 기록을 조용히 다시 조회 (다른 기기·웹에서 바뀐 내용 반영)
+  // 저장하지 않은 수정 내용, 저장 중, 재조회 대기 중이면 덮어쓰지 않도록 건너뜀
+  useEffect(() => {
+    if (isFirstViewRef.current) {
+      isFirstViewRef.current = false
+      return
+    }
+
+    const hasDirty = Object.values(records).some((record) => record.dirty)
+    if (!accountId || isSaving || hasDirty || reloadPendingKeysRef.current.length > 0) {
+      return
+    }
+
+    let active = true
+
+    fetchHygieneChecks(accountId)
+      .then((checkRows) => {
+        if (!active) return
+        const freshRecords = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+
+        // 조회하는 사이 수정이 시작됐으면 화면 내용 유지
+        setRecords((current) => {
+          if (Object.values(current).some((record) => record.dirty)) return current
+          savedRecordsRef.current = freshRecords
+          return freshRecords
+        })
+      })
+      .catch(() => {})
+
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey])
+
   // 숨김 처리되지 않은 사용 중 카테고리
   // 구분 없음 기록이 있으면 맨 뒤에 구분 없음 카테고리 추가
   const hasNoCategoryRecords = (records[NO_CATEGORY_KEY]?.pairs.length ?? 0) > 0
@@ -750,12 +788,12 @@ export default function HygieneScreen() {
     const pendingCount = pairs.length - doneCount
 
     const statuses = Object.values(statusMap)
-    const overallStatus: HygieneStatus =
-      statuses.length > 0 && statuses.every((status) => status === '완료')
+    // 조치 필요 카테고리가 있을 때만 조치 필요, 전부 완료면 완료, 그 외(미점검 포함)는 미점검
+    const overallStatus: HygieneStatus = statuses.some((status) => status === '조치 필요')
+      ? '조치 필요'
+      : statuses.length > 0 && statuses.every((status) => status === '완료')
         ? '완료'
-        : statuses.every((status) => status === '미점검')
-          ? '미점검'
-          : '조치 필요'
+        : '미점검'
 
     return {
       doneCount,
@@ -1332,18 +1370,33 @@ export default function HygieneScreen() {
   const viewerIndex = viewer ? viewerPairs.findIndex((pair) => pair.id === viewer.pairId) : -1
   const viewerPair = viewerIndex >= 0 ? viewerPairs[viewerIndex] : null
 
-  // 헤더 상태 배지 값 (상세 화면은 선택 카테고리 상태, 요약 화면은 전체 상태)
-  const headerStatus = selectedCategory ? statusMap[selectedCategory.key] : summary.overallStatus
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       {/* 화면 전체 틀 (태블릿은 가운데 최대 폭) */}
       <View style={[styles.frame, isTablet && styles.frameTablet]}>
-        {/* 상단 로고, 화면 제목, 전체/카테고리 상태 배지 헤더 */}
+        {/* 상단 헤더 (왼쪽 뒤로 버튼: 상세는 전체 요약으로, 요약은 메인으로 / 가운데 제목 / 오른쪽 거래처 변경은 본사 계정 요약 화면만) */}
         <BrandHeader
           title="위생 점검"
           subtitle={selectedCategory ? `${selectedCategory.title} 상세` : accountName}
-          right={<Badge label={headerStatus} {...statusTone[headerStatus]} />}
+          largeText
+          left={
+            <Pressable
+              hitSlop={8}
+              disabled={isSaving}
+              style={styles.headerBackButton}
+              onPress={selectedCategory ? handleBackToSummary : handleGoMain}
+            >
+              <MaterialCommunityIcons name="chevron-left" size={26} color="#273542" />
+            </Pressable>
+          }
+          right={
+            selectedCategory || !isHeadOffice ? null : (
+              <Pressable hitSlop={6} disabled={isSaving} style={styles.accountBarButton} onPress={() => setIsPickingAccount(true)}>
+                <Text style={styles.accountBarButtonText}>거래처 변경</Text>
+              </Pressable>
+            )
+          }
         />
 
         {selectedCategory && selectedRecord ? (
@@ -1508,32 +1561,6 @@ export default function HygieneScreen() {
           </>
         ) : (
           <>
-            {/* 점검 거래처 표시(본사 계정은 거래처 변경 버튼만, 거래처명은 헤더에 표시)와 메인으로·로그아웃 버튼 줄 */}
-            <View style={styles.accountBar}>
-              {isHeadOffice ? (
-                <>
-                  <Pressable style={styles.accountBarButton} onPress={() => setIsPickingAccount(true)}>
-                    <Text style={styles.accountBarButtonText}>거래처 변경</Text>
-                  </Pressable>
-                  {/* 메인으로·로그아웃 버튼을 오른쪽으로 미는 빈 공간 */}
-                  <View style={styles.accountBarSpacer} />
-                </>
-              ) : (
-                <>
-                  <Text style={styles.accountBarLabel}>거래처</Text>
-                  <Text style={styles.accountBarName} numberOfLines={1}>
-                    {accountName}
-                  </Text>
-                </>
-              )}
-              <Pressable style={styles.sessionButton} onPress={handleGoMain}>
-                <Text style={styles.sessionButtonText}>메인으로</Text>
-              </Pressable>
-              <Pressable style={styles.sessionButton} onPress={handleLogout}>
-                <Text style={styles.sessionButtonText}>로그아웃</Text>
-              </Pressable>
-            </View>
-
             {/* 전체 점검 진행률과 상태별 개수 영역 */}
             <View style={styles.summary}>
               {/* 진행률 제목·퍼센트(왼쪽)와 상태별 개수 배지(오른쪽) */}
@@ -1542,8 +1569,8 @@ export default function HygieneScreen() {
                   전체 점검 현황 <Text style={styles.summaryPercent}>{summary.percent}%</Text>
                 </Text>
                 <View style={styles.summaryStats}>
-                  <Badge label={`완료 ${summary.doneCount}건`} {...statusTone['완료']} />
-                  <Badge label={`조치 필요 ${summary.pendingCount}건`} {...statusTone['조치 필요']} />
+                  <Badge label={`완료 ${summary.doneCount}건`} {...statusTone['완료']} large />
+                  <Badge label={`조치 필요 ${summary.pendingCount}건`} {...statusTone['조치 필요']} large />
                 </View>
               </View>
               {/* 진행률 막대 */}
@@ -1687,7 +1714,7 @@ export default function HygieneScreen() {
 
               {/* 화면 사용 안내 TIP 박스 */}
               <View style={styles.hint}>
-                <Badge label="TIP" bg="#ddf0f8" fg="#24708d" />
+                <Badge label="TIP" bg="#ddf0f8" fg="#24708d" large />
                 <Text style={styles.hintText}>전체에서는 요약만 보고, 카드 선택 시 사진·메모 상세로 이동합니다.</Text>
               </View>
             </ScrollView>
@@ -1753,7 +1780,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: '#7a8998',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   buttonDisabled: {
@@ -1772,30 +1799,9 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 640,
   },
-  accountBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    backgroundColor: '#ffffff',
-  },
-  accountBarLabel: {
-    color: '#7a8998',
-    fontSize: 14,
-    fontFamily: font.medium,
-  },
-  accountBarName: {
-    flex: 1,
-    color: '#263442',
-    fontSize: 16,
-    fontFamily: font.bold,
-  },
-  accountBarSpacer: {
-    flex: 1,
-  },
+  // 헤더 오른쪽 거래처 변경 버튼 (본사 계정)
   accountBarButton: {
-    height: 28,
+    height: 34,
     paddingHorizontal: 12,
     borderRadius: 999,
     borderWidth: 1,
@@ -1806,23 +1812,17 @@ const styles = StyleSheet.create({
   },
   accountBarButtonText: {
     color: '#1687b2',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
-  sessionButton: {
-    height: 28,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#dce4ea',
+  // 헤더 왼쪽 뒤로 버튼 (지점 업로드 뒤로 버튼과 같은 모양)
+  headerBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f7f9fa',
-  },
-  sessionButtonText: {
-    color: '#5b6a79',
-    fontSize: 14,
-    fontFamily: font.medium,
+    backgroundColor: '#f1f4f7',
   },
   accountSearchBar: {
     paddingHorizontal: 18,
@@ -1837,7 +1837,7 @@ const styles = StyleSheet.create({
     borderColor: '#cfd8e0',
     backgroundColor: '#ffffff',
     color: '#344252',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.regular,
   },
   accountListContent: {
@@ -1863,14 +1863,15 @@ const styles = StyleSheet.create({
   accountRowText: {
     flex: 1,
     color: '#273542',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
+  // 전체 점검 현황 영역 (진행 막대 위 간격 gap 16 = 아래 간격 paddingBottom 6 + 필터 탭 위 여백 10)
   summary: {
     paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 12,
-    gap: 8,
+    paddingTop: 20,
+    paddingBottom: 6,
+    gap: 16,
     backgroundColor: '#ffffff',
   },
   summaryTitleRow: {
@@ -1881,12 +1882,12 @@ const styles = StyleSheet.create({
   },
   summaryTitle: {
     color: '#263442',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   summaryPercent: {
     color: '#1593c4',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   progressTrack: {
@@ -1926,7 +1927,7 @@ const styles = StyleSheet.create({
   },
   filterTabText: {
     color: '#5b6a79',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   filterTabTextActive: {
@@ -1952,12 +1953,12 @@ const styles = StyleSheet.create({
   },
   bodyHeadTitle: {
     color: '#263442',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   bodyHeadCount: {
     color: '#7a8998',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   // 좁은 화면에서는 제목 아래 줄로 내려가 오른쪽 정렬, 그래도 넘치면 버튼끼리 줄바꿈
@@ -1986,7 +1987,7 @@ const styles = StyleSheet.create({
   periodTitle: {
     marginBottom: 14,
     color: '#263442',
-    fontSize: 18,
+    fontSize: 20,
     fontFamily: font.bold,
   },
   periodOptions: {
@@ -2010,7 +2011,7 @@ const styles = StyleSheet.create({
   },
   periodOptionText: {
     color: '#273542',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
   periodOptionTextActive: {
@@ -2028,7 +2029,7 @@ const styles = StyleSheet.create({
   },
   editButtonText: {
     color: '#273542',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
   // 요약 카드 한 줄 (칸 좌우 여백 6씩 = 카드 사이 12, 바깥 여백은 음수 마진으로 상쇄)
@@ -2063,8 +2064,8 @@ const styles = StyleSheet.create({
   overviewCardTitle: {
     flex: 1,
     color: '#273542',
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 17,
+    lineHeight: 22,
     fontFamily: font.bold,
   },
   // 전/후·상태 배지 한 줄 (작은 배지와 좁은 간격으로 반쪽 카드 폭에 맞춤)
@@ -2076,12 +2077,12 @@ const styles = StyleSheet.create({
   overviewCardHint: {
     minHeight: 24,
     color: '#728190',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.regular,
   },
   overviewCardLinkArrow: {
     color: '#1687b2',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
   emptyCard: {
@@ -2093,7 +2094,7 @@ const styles = StyleSheet.create({
   },
   emptyCardText: {
     color: '#728190',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
     textAlign: 'center',
   },
@@ -2110,7 +2111,7 @@ const styles = StyleSheet.create({
   hintText: {
     flex: 1,
     color: '#4e7182',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.regular,
   },
   bottomBar: {
@@ -2133,7 +2134,7 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#ffffff',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   secondaryButton: {
@@ -2148,7 +2149,7 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: {
     color: '#52606d',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
   categoryChipsBar: {
@@ -2176,7 +2177,7 @@ const styles = StyleSheet.create({
   },
   categoryChipText: {
     color: '#51606f',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   categoryChipTextActive: {
@@ -2195,7 +2196,7 @@ const styles = StyleSheet.create({
   },
   guideLabel: {
     color: '#1687b2',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.bold,
   },
   guideChips: {
@@ -2211,12 +2212,12 @@ const styles = StyleSheet.create({
   },
   guideChipText: {
     color: '#344252',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   guidePoint: {
     color: '#344252',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   detailBodyContent: {
@@ -2240,17 +2241,17 @@ const styles = StyleSheet.create({
   },
   detailSummaryTitle: {
     color: '#263442',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   detailSummaryMeta: {
     color: '#778694',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.regular,
   },
   detailSummaryHint: {
     color: '#1687b2',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.medium,
   },
   pairCard: {
@@ -2281,17 +2282,17 @@ const styles = StyleSheet.create({
   },
   pairNumberText: {
     color: '#1687b2',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.bold,
   },
   pairCardTitle: {
     color: '#263442',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   pairDeleteText: {
     color: '#b04141',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   pairColumns: {
@@ -2323,12 +2324,12 @@ const styles = StyleSheet.create({
   pairSideStamp: {
     flexShrink: 1,
     color: '#7a8998',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.regular,
   },
   pairSideTitle: {
     color: '#3d4a56',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.bold,
   },
   pairPhotoBox: {
@@ -2351,12 +2352,12 @@ const styles = StyleSheet.create({
   },
   pairPhotoText: {
     color: '#6f7d8a',
-    fontSize: 12,
+    fontSize: 14,
     fontFamily: font.medium,
   },
   pairNoteLabel: {
     color: '#445362',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   pairNoteInput: {
@@ -2368,15 +2369,15 @@ const styles = StyleSheet.create({
     borderColor: '#cfd8e0',
     backgroundColor: '#ffffff',
     color: '#344252',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
   },
   // 잠금 칸 메모 글 (줄바꿈 그대로, 넉넉한 줄 간격으로 전체 표시)
   pairNoteText: {
     paddingHorizontal: 2,
     color: '#344252',
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 23,
     fontFamily: font.regular,
   },
   pairNoteTextEmpty: {
@@ -2391,7 +2392,7 @@ const styles = StyleSheet.create({
   },
   pairEmptyText: {
     color: '#8a97a3',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
   },
   addPairButton: {
@@ -2407,7 +2408,7 @@ const styles = StyleSheet.create({
   },
   addPairText: {
     color: '#1687b2',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   field: {
@@ -2415,7 +2416,7 @@ const styles = StyleSheet.create({
   },
   fieldLabel: {
     color: '#445362',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   fieldInput: {
@@ -2426,7 +2427,7 @@ const styles = StyleSheet.create({
     borderColor: '#cfd8e0',
     backgroundColor: '#ffffff',
     color: '#344252',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
   },
 })

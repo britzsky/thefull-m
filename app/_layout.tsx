@@ -70,6 +70,7 @@ export default function RootLayout() {
         {/* 로그인 후 메인(출퇴근·위생 점검 선택), 위생 화면은 로컬 개발에서만 진입 */}
         <Stack.Screen name="home" options={{ headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="hygiene" options={{ headerShown: false }} />
+        <Stack.Screen name="branch-upload" options={{ headerShown: false }} />
       </Stack>
       {/* 시작 인트로 영역 (파티클이 모여 로고가 완성되는 HTML 애니메이션, 1회 재생 후 제거) */}
       {!introDone && (

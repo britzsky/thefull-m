@@ -30,15 +30,21 @@ function useKeyboardVisible() {
 export default function BrandHeader({
   title,
   subtitle,
+  left,
   right,
   largeTitle = false,
+  largeText = false,
   centerLogo = false,
 }: {
   title?: string
   subtitle?: string
+  // 왼쪽 칸 요소 (뒤로 버튼 등, 넣으면 왼쪽 로고 대신 표시)
+  left?: ReactNode
   right?: ReactNode
   // 제목 크게 표시 여부 (부제목 없이 제목만 쓰는 로그인 화면용)
   largeTitle?: boolean
+  // 제목·부제목 글씨를 지점 업로드 화면 제목 바와 같은 크기로 표시 (제목 20, 부제목 14)
+  largeText?: boolean
   // 제목 대신 가운데에 로고 표시 여부 (로그인 화면용, 왼쪽 로고는 숨김)
   centerLogo?: boolean
 }) {
@@ -48,18 +54,18 @@ export default function BrandHeader({
   return (
     // 헤더 한 줄 (좌·중·우 3등분)
     <View style={styles.header}>
-      {/* 왼쪽 로고 칸 */}
+      {/* 왼쪽 로고 칸 (left 요소가 있으면 로고 대신 표시) */}
       <View style={styles.logoSlot}>
-        {centerLogo ? null : <Image source={logoImage} style={styles.logo} />}
+        {left ?? (centerLogo ? null : <Image source={logoImage} style={styles.logo} />)}
       </View>
       {/* 가운데 제목·부제목 칸 (centerLogo면 로고 표시) */}
       <View style={styles.center}>
         {centerLogo ? (
           <Image source={logoImage} style={styles.logoCenter} />
         ) : (
-          <Text style={[styles.title, largeTitle && styles.titleLarge]}>{title}</Text>
+          <Text style={[styles.title, (largeTitle || largeText) && styles.titleLarge]}>{title}</Text>
         )}
-        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+        {subtitle ? <Text style={[styles.subtitle, largeText && styles.subtitleLarge]}>{subtitle}</Text> : null}
       </View>
       {/* 오른쪽 칸 (키보드 표시 중에는 완료 버튼, 그 외에는 상태 배지 등 추가 요소) */}
       <View style={styles.rightSlot}>
@@ -117,6 +123,9 @@ const styles = StyleSheet.create({
     color: '#7a8998',
     fontSize: 12,
     fontFamily: font.regular,
+  },
+  subtitleLarge: {
+    fontSize: 14,
   },
   doneButton: {
     height: 30,

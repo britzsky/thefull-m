@@ -8,7 +8,7 @@ import { prefetchCommuteLocation } from '@/lib/attendance/locationPrefetch'
 import { getAppSession, logoutAppSession } from '@/lib/auth/storage'
 import { font } from '@/lib/fonts'
 
-// 메인 화면 (로그인 후 진입, 출·퇴근 / 위생 점검 업무 선택)
+// 메인 화면 (로그인 후 진입, 출·퇴근 / 위생 점검 / 지점 업로드 / 전자계약 업무 선택, 2열 × 2행)
 
 // 헤더 가운데 심볼 로고 이미지
 const symbolImage = require('../public/image/thefull_logo.png')
@@ -20,15 +20,15 @@ type MenuCard = {
   icon: keyof typeof MaterialCommunityIcons.glyphMap
   iconBg: string
   iconFg: string
-  // 이동 경로
-  route: '/attendance' | '/hygiene'
+  // 이동 경로 (없으면 준비 중 카드)
+  route?: '/attendance' | '/hygiene' | '/branch-upload'
 }
 
-// 업무 메뉴 버튼 목록
+// 업무 메뉴 버튼 목록 (2개씩 한 줄)
 const menuCards: MenuCard[] = [
   {
     title: '출·퇴근',
-    subtitle: '출근·퇴근 시간을 기록하고\n오늘 근무 상태를 확인합니다.',
+    subtitle: '근무시간 기록 및 조회',
     icon: 'clock-check-outline',
     iconBg: '#eaf5fa',
     iconFg: '#1593c4',
@@ -36,11 +36,26 @@ const menuCards: MenuCard[] = [
   },
   {
     title: '위생 점검',
-    subtitle: '항목별 조치 전·후 사진과\n조치 내용을 기록합니다.',
+    subtitle: '조치 전·후 사진과 기록',
     icon: 'spray-bottle',
     iconBg: '#eaf7ef',
     iconFg: '#2a7a49',
     route: '/hygiene',
+  },
+  {
+    title: '지점 업로드',
+    subtitle: '식단표 및 식판 사진 기록',
+    icon: 'image-multiple-outline',
+    iconBg: '#fdf1e6',
+    iconFg: '#d9822b',
+    route: '/branch-upload',
+  },
+  {
+    title: '전자계약',
+    subtitle: '계약서 작성 및 관리',
+    icon: 'file-document-edit-outline',
+    iconBg: '#f0edf9',
+    iconFg: '#7a68b8',
   },
 ]
 
@@ -75,7 +90,7 @@ export default function HomeScreen() {
 
   // 메뉴 버튼 처리 (선택한 업무 화면으로 이동)
   const handlePressMenu = (card: MenuCard) => {
-    router.push(card.route)
+    if (card.route) router.push(card.route)
   }
 
   // 로그아웃 버튼 처리 (로그인 정보 삭제 후 로그인 화면 이동)
@@ -117,27 +132,51 @@ export default function HomeScreen() {
 
         {/* 업무 메뉴 버튼 영역 */}
         <View style={styles.body}>
-          {menuCards.map((card) => (
-            // 위아래 1:1로 나눈 업무 메뉴 버튼
-            <Pressable
-              key={card.title}
-              onPress={() => handlePressMenu(card)}
-              style={({ pressed }) => [styles.menuCard, pressed && styles.menuCardPressed]}
-            >
-              {/* 업무 아이콘 */}
-              <View style={[styles.menuIcon, { backgroundColor: card.iconBg }]}>
-                <MaterialCommunityIcons name={card.icon} size={40} color={card.iconFg} />
-              </View>
-              {/* 업무명과 설명 */}
-              <Text style={styles.menuTitle}>{card.title}</Text>
-              <Text style={styles.menuDescription}>{card.subtitle}</Text>
-              {/* 바로가기 링크 */}
-              <View style={styles.menuLink}>
-                <Text style={styles.menuLinkText}>바로가기</Text>
-                <MaterialCommunityIcons name="chevron-right" size={16} color="#1687b2" />
-              </View>
-            </Pressable>
+          {/* 안내 문구 */}
+          <View>
+            <Text style={styles.greetTitle}>오늘도 안전하고 편리하게</Text>
+            <Text style={styles.greetText}>필요한 업무를 선택해주세요.</Text>
+          </View>
+
+          {/* 2개씩 한 줄로 나눈 업무 메뉴 버튼 */}
+          {[menuCards.slice(0, 2), menuCards.slice(2, 4)].map((rowCards) => (
+            <View key={rowCards[0].title} style={styles.menuRow}>
+              {rowCards.map((card) => (
+                // 업무 메뉴 버튼 (경로가 없는 카드는 업무명 없이 준비 중 문구만 표시, 비활성)
+                <Pressable
+                  key={card.title}
+                  disabled={!card.route}
+                  onPress={() => handlePressMenu(card)}
+                  style={({ pressed }) => [styles.menuCard, !card.route && styles.menuCardDisabled, pressed && styles.menuCardPressed]}
+                >
+                  {card.route ? (
+                    <>
+                      {/* 업무 아이콘 */}
+                      <View style={[styles.menuIcon, { backgroundColor: card.iconBg }]}>
+                        <MaterialCommunityIcons name={card.icon} size={34} color={card.iconFg} />
+                      </View>
+                      {/* 업무명과 설명 */}
+                      <Text style={styles.menuTitle}>{card.title}</Text>
+                      <Text style={styles.menuDescription}>{card.subtitle}</Text>
+                      {/* 바로가기 링크 */}
+                      <View style={styles.menuLink}>
+                        <Text style={[styles.menuLinkText, { color: card.iconFg }]}>바로가기</Text>
+                        <MaterialCommunityIcons name="chevron-right" size={16} color={card.iconFg} />
+                      </View>
+                    </>
+                  ) : (
+                    <Text style={styles.menuReadyText}>준비 중</Text>
+                  )}
+                </Pressable>
+              ))}
+            </View>
           ))}
+
+          {/* 하단 안내 박스 */}
+          <View style={styles.infoBox}>
+            <MaterialCommunityIcons name="briefcase-outline" size={18} color="#1687b2" />
+            <Text style={styles.infoText}>지점에서 필요한 자료를 한곳에서 관리합니다.</Text>
+          </View>
         </View>
       </View>
     </SafeAreaView>
@@ -199,12 +238,29 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: font.semibold,
   },
+  greetTitle: {
+    color: '#172431',
+    fontSize: 18,
+    fontFamily: font.bold,
+  },
+  greetText: {
+    color: '#7a8998',
+    fontSize: 14,
+    fontFamily: font.regular,
+    marginTop: 4,
+  },
+  menuRow: {
+    flex: 1,
+    maxHeight: 240,
+    flexDirection: 'row',
+    gap: 12,
+  },
   menuCard: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    padding: 20,
+    gap: 8,
+    padding: 14,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: '#dde5eb',
@@ -213,6 +269,28 @@ const styles = StyleSheet.create({
   menuCardPressed: {
     borderColor: '#9cc9db',
     backgroundColor: '#f1f8fb',
+  },
+  menuCardDisabled: {
+    backgroundColor: '#f8f9fb',
+  },
+  menuReadyText: {
+    color: '#8a98a6',
+    fontSize: 16,
+    fontFamily: font.medium,
+  },
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+  },
+  infoText: {
+    flex: 1,
+    color: '#52606d',
+    fontSize: 13,
+    fontFamily: font.regular,
   },
   logoutButton: {
     alignSelf: 'flex-start',
@@ -229,16 +307,16 @@ const styles = StyleSheet.create({
     fontFamily: font.medium,
   },
   menuIcon: {
-    width: 76,
-    height: 76,
-    borderRadius: 22,
+    width: 62,
+    height: 62,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
   },
   menuTitle: {
     color: '#273542',
-    fontSize: 22,
+    fontSize: 21,
     fontFamily: font.bold,
   },
   menuDescription: {
@@ -256,7 +334,7 @@ const styles = StyleSheet.create({
   },
   menuLinkText: {
     color: '#1687b2',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
 })

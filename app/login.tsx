@@ -694,12 +694,12 @@ const styles = StyleSheet.create({
   },
   bodyHeadTitle: {
     color: '#263442',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   bodyHeadDescription: {
     color: '#7a8998',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
   },
   formCard: {
@@ -715,7 +715,7 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     color: '#445362',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   input: {
@@ -726,7 +726,7 @@ const styles = StyleSheet.create({
     borderColor: '#cfd8e0',
     backgroundColor: '#ffffff',
     color: '#344252',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.regular,
   },
   rememberRow: {
@@ -750,12 +750,12 @@ const styles = StyleSheet.create({
   },
   checkboxMark: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.bold,
   },
   rememberText: {
     color: '#445362',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.medium,
   },
   loginButton: {
@@ -775,7 +775,7 @@ const styles = StyleSheet.create({
   },
   loginButtonText: {
     color: '#ffffff',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.bold,
   },
   hidden: {
@@ -822,7 +822,7 @@ const styles = StyleSheet.create({
   },
   modeText: {
     color: '#52606d',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.medium,
   },
   modeTextChecked: {
@@ -862,7 +862,7 @@ const styles = StyleSheet.create({
   },
   clearIconText: {
     color: '#ffffff',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '700',
     includeFontPadding: false,
     textAlignVertical: 'center',
@@ -879,7 +879,7 @@ const styles = StyleSheet.create({
   },
   dropdownArrow: {
     color: '#7d838c',
-    fontSize: 16,
+    fontSize: 18,
     includeFontPadding: false,
     textAlignVertical: 'center',
   },
@@ -901,13 +901,13 @@ const styles = StyleSheet.create({
   },
   accountOptionText: {
     color: '#344252',
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: font.regular,
   },
   accountEmptyText: {
     padding: 12,
     color: '#7a8998',
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: font.regular,
   },
 })

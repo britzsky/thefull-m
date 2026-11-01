@@ -2,21 +2,26 @@ import { StyleSheet, Text, View } from 'react-native'
 
 import { font } from '@/lib/fonts'
 
-// 둥근 상태 배지 (compact: 좁은 카드 한 줄에 여러 개 넣을 때 쓰는 작은 크기)
+// 둥근 상태 배지 (compact: 좁은 카드 한 줄에 여러 개 넣을 때 쓰는 작은 크기, large: 글씨를 키운 크기)
 export default function Badge({
   label,
   bg,
   fg,
   compact = false,
+  large = false,
 }: {
   label: string
   bg: string
   fg: string
   compact?: boolean
+  large?: boolean
 }) {
   return (
-    <View style={[styles.badge, compact && styles.badgeCompact, { backgroundColor: bg }]}>
-      <Text style={[styles.badgeText, compact && styles.badgeTextCompact, { color: fg }]} numberOfLines={1}>
+    <View style={[styles.badge, compact && styles.badgeCompact, large && styles.badgeLarge, { backgroundColor: bg }]}>
+      <Text
+        style={[styles.badgeText, compact && styles.badgeTextCompact, large && styles.badgeTextLarge, { color: fg }]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
     </View>
@@ -40,5 +45,12 @@ const styles = StyleSheet.create({
   },
   badgeTextCompact: {
     fontSize: 11,
+  },
+  badgeLarge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  badgeTextLarge: {
+    fontSize: 14,
   },
 })
