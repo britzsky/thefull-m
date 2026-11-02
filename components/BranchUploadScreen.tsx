@@ -199,9 +199,8 @@ export default function BranchUploadScreen() {
   const [isSaving, setIsSaving] = useState(false)
   // 상세 화면 주차 시작일(월요일)
   const [selectedWeekStart, setSelectedWeekStart] = useState('')
-  // 식판 사진 등록 화면 날짜와 새로 고른 사진 경로 (고르기 전이면 빈 값)
+  // 식판 사진 등록 화면 날짜
   const [photoDate, setPhotoDate] = useState('')
-  const [pickedUri, setPickedUri] = useState('')
   // 크게 보기 중인 식단표 파일 주소 (빈 값이면 닫힘)
   const [menuViewerUri, setMenuViewerUri] = useState('')
 
@@ -411,7 +410,6 @@ export default function BranchUploadScreen() {
   // 일자 카드 선택 처리 (식판 사진 등록 화면으로 이동 후 최신 자료 조회)
   const handleOpenDay = (date: string) => {
     setPhotoDate(date)
-    setPickedUri('')
     setStep('photo')
     void loadRows(true)
   }
@@ -453,24 +451,15 @@ export default function BranchUploadScreen() {
     )
   }
 
-  // 식판 사진 등록 화면의 사진 선택 버튼 처리
+  // 식판 사진 촬영·앨범 선택 버튼 처리 (고른 사진을 선택 날짜 행에 바로 저장 후 주차 상세로 복귀)
   const handlePickPlate = async (source: 'camera' | 'library') => {
     const uri = await pickPhoto(source)
-    if (uri) setPickedUri(uri)
-  }
-
-  // 식판 사진 저장 버튼 처리 (선택 날짜 행에 저장 후 주차 상세로 복귀)
-  const handleSavePlate = async () => {
-    if (!pickedUri) {
-      Alert.alert('안내', '사진 촬영 또는 앨범에서 사진을 선택해주세요.')
-      return
-    }
+    if (!uri) return
 
     setIsSaving(true)
     try {
-      await saveBranchPhoto('plate', pickedUri, accountId, photoDate, loginUserId)
+      await saveBranchPhoto('plate', uri, accountId, photoDate, loginUserId)
       await loadRows()
-      setPickedUri('')
       setStep('week')
       Alert.alert('저장 완료', '식판 사진이 저장되었습니다.')
     } catch (error) {
@@ -494,7 +483,6 @@ export default function BranchUploadScreen() {
           try {
             await deleteBranchFile(kind, accountId, mealDate, loginUserId)
             await loadRows()
-            setPickedUri('')
             Alert.alert('삭제 완료', `${label}이 삭제되었습니다.`)
           } catch (error) {
             Alert.alert('삭제 실패', error instanceof Error ? error.message : `${label} 삭제에 실패했습니다.`)
@@ -596,7 +584,7 @@ export default function BranchUploadScreen() {
   // 일별 식판 사진 등록 화면
   if (step === 'photo' && selectedWeek) {
     const savedPath = rowsByDate[photoDate]?.plate_file_path
-    const previewUri = pickedUri || toBranchFileUrl(savedPath)
+    const previewUri = toBranchFileUrl(savedPath)
 
     return (
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
@@ -620,7 +608,7 @@ export default function BranchUploadScreen() {
               <Badge label={savedPath ? '1장 등록' : '미등록'} {...(savedPath ? tone.green : tone.gray)} large />
             </View>
 
-            {/* 사진 미리보기 카드 (새로 고른 사진 우선, 없으면 등록된 사진, 둘 다 없으면 안내) */}
+            {/* 사진 미리보기 카드 (등록된 사진, 없으면 빈 칸 안내) */}
             <View style={[styles.card, styles.previewCard]}>
               {previewUri ? (
                 <LoadingImage uri={previewUri} style={styles.previewImage} resizeMode="contain" />
@@ -629,7 +617,7 @@ export default function BranchUploadScreen() {
                   <MaterialCommunityIcons name="image-outline" size={40} color="#a7b4c0" />
                 </View>
               )}
-              <Text style={styles.metaText}>{pickedUri ? '새로 선택한 사진' : '식판 사진 미리보기'}</Text>
+              <Text style={styles.metaText}>식판 사진 미리보기</Text>
             </View>
 
             {/* 사진 선택 방법 (촬영 / 앨범) */}
@@ -644,24 +632,8 @@ export default function BranchUploadScreen() {
               </Pressable>
             </View>
 
-            {/* 식판 사진 저장 버튼 */}
-            <Pressable
-              style={[styles.saveButton, (!pickedUri || isSaving) && styles.saveButtonDisabled]}
-              disabled={!pickedUri || isSaving}
-              onPress={() => void handleSavePlate()}
-            >
-              {isSaving ? (
-                <ActivityIndicator color="#ffffff" />
-              ) : (
-                <>
-                  <MaterialCommunityIcons name="upload" size={20} color="#ffffff" />
-                  <Text style={styles.saveButtonText}>식판 사진 저장하기</Text>
-                </>
-              )}
-            </Pressable>
-
-            {/* 등록된 식판 사진 삭제 버튼 (새 사진을 고르지 않았고 등록된 사진이 있을 때만) */}
-            {savedPath && !pickedUri ? (
+            {/* 등록된 식판 사진 삭제 버튼 (등록된 사진이 있을 때만) */}
+            {savedPath ? (
               <Pressable style={styles.deleteWideButton} disabled={isSaving} onPress={() => handleDeleteFile('plate', photoDate)}>
                 <MaterialCommunityIcons name="trash-can-outline" size={20} color="#d93838" />
                 <Text style={styles.deleteWideButtonText}>식판 사진 삭제하기</Text>
@@ -1523,22 +1495,5 @@ const styles = StyleSheet.create({
     color: '#273542',
     fontSize: 17,
     fontFamily: font.semibold,
-  },
-  saveButton: {
-    height: 52,
-    borderRadius: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#1593c4',
-  },
-  saveButtonDisabled: {
-    backgroundColor: '#9fcde0',
-  },
-  saveButtonText: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontFamily: font.bold,
   },
 })
