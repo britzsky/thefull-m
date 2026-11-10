@@ -42,6 +42,7 @@ import {
   saveLoginSession,
   saveRememberedLogin,
 } from '@/lib/auth/storage'
+import { registerPushToken, takeRouteAfterLogin } from '@/lib/push'
 import { api } from '@/lib/api/client'
 import { font } from '@/lib/fonts'
 
@@ -214,9 +215,11 @@ export default function LoginScreen() {
       await clearCookSession()
       await saveLoginSession(response)
       await saveLoginMode('staff')
+      // 이 기기 푸시 토큰을 로그인한 계정으로 등록 (기다리지 않음, 실패해도 로그인 진행)
+      void registerPushToken({ kind: 'staff', userId: id })
 
-      // 로그인 성공 → 메인(출퇴근·위생 점검 선택) 이동
-      router.replace('/home')
+      // 로그인 성공 → 메인(출퇴근·위생 점검 선택) 이동, 알림을 눌러 들어왔으면 그 화면으로
+      router.replace(takeRouteAfterLogin())
     } catch (error) {
       const message =
         error instanceof Error ? error.message : '서버 통신 중 오류가 발생했습니다.'
@@ -264,7 +267,9 @@ export default function LoginScreen() {
     await clearLoginSession()
     await saveCookSession({ ...identity, accountName })
     await saveLoginMode('cook')
-    router.replace('/home')
+    // 이 기기 푸시 토큰을 근무지·이름·휴대폰 뒷자리로 등록 (기다리지 않음, 실패해도 로그인 진행)
+    void registerPushToken({ kind: 'cook', ...identity })
+    router.replace(takeRouteAfterLogin())
   }
 
   // 조리사/조리원 로그인 처리

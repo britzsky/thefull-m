@@ -1,12 +1,15 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons'
 import { router, useFocusEffect } from 'expo-router'
-import { useCallback } from 'react'
-import { Alert, Image, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
+import { useCallback, useState } from 'react'
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 
 import { prefetchCommuteLocation } from '@/lib/attendance/locationPrefetch'
 import { getAppSession, logoutAppSession } from '@/lib/auth/storage'
+import { fetchUnsignedContractCount } from '@/lib/contract/api'
+import { syncAppBadge } from '@/lib/push'
 import { font } from '@/lib/fonts'
+import { usePullRefresh } from '@/lib/usePullRefresh'
 
 // 메인 화면 (로그인 후 진입, 출·퇴근 / 위생 점검 / 지점 업로드 / 전자계약 업무 선택, 2열 × 2행)
 
@@ -21,7 +24,7 @@ type MenuCard = {
   iconBg: string
   iconFg: string
   // 이동 경로 (없으면 준비 중 카드)
-  route?: '/attendance' | '/hygiene' | '/branch-upload'
+  route?: '/attendance' | '/hygiene' | '/branch-upload' | '/contract'
 }
 
 // 업무 메뉴 버튼 목록 (2개씩 한 줄)
@@ -56,6 +59,7 @@ const menuCards: MenuCard[] = [
     icon: 'file-document-edit-outline',
     iconBg: '#f0edf9',
     iconFg: '#7a68b8',
+    route: '/contract',
   },
 ]
 
@@ -73,9 +77,22 @@ export default function HomeScreen() {
   // 태블릿 폭 여부 (가운데 정렬 최대 폭 적용 기준)
   const { width } = useWindowDimensions()
   const isTablet = width >= 768
+  // 서명 전 본인 계약서 수 (0보다 크면 상단 안내 배너와 전자계약 카드 배지 표시)
+  const [unsignedCount, setUnsignedCount] = useState(0)
+
+  // 서명 전 본인 계약서 수를 다시 조회해 배너·배지에 반영하는 함수 (화면 복귀·당겨서 새로고침 때 호출)
+  const loadUnsignedCount = useCallback(async () => {
+    const session = await getAppSession()
+    if (!session) return
+    const count = await fetchUnsignedContractCount(session)
+    if (count === null) return
+    setUnsignedCount(count)
+    syncAppBadge(count)
+  }, [])
 
   // 화면 진입 시 로그인 상태 확인 (로그인 정보가 없으면 로그인 화면으로 이동)
   // 로그인 상태면 출퇴근 화면 진입에 대비해 GPS 위치를 미리 조회 (권한이 이미 허용된 경우만)
+  // 서명 전 계약서 수도 다시 조회 (서명하고 돌아오면 배너가 사라지도록 화면에 돌아올 때마다)
   useFocusEffect(
     useCallback(() => {
       void getAppSession().then((session) => {
@@ -84,9 +101,13 @@ export default function HomeScreen() {
           return
         }
         prefetchCommuteLocation()
+        void loadUnsignedCount()
       })
-    }, [])
+    }, [loadUnsignedCount])
   )
+
+  // 아래로 당겨 새로고침 (서명 전 계약서 수 다시 조회)
+  const pullRefresh = usePullRefresh(loadUnsignedCount)
 
   // 메뉴 버튼 처리 (선택한 업무 화면으로 이동)
   const handlePressMenu = (card: MenuCard) => {
@@ -130,13 +151,35 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* 업무 메뉴 버튼 영역 */}
-        <View style={styles.body}>
+        {/* 업무 메뉴 버튼 영역 (아래로 당기면 새로고침) */}
+        <ScrollView
+          style={styles.bodyScroll}
+          contentContainerStyle={styles.body}
+          refreshControl={pullRefresh.refreshControl}
+        >
+          {pullRefresh.notice}
           {/* 안내 문구 */}
           <View>
             <Text style={styles.greetTitle}>오늘도 안전하고 편리하게</Text>
             <Text style={styles.greetText}>필요한 업무를 선택해주세요.</Text>
           </View>
+
+          {/* 서명 전 계약서 안내 배너 (푸시 알림과 같은 문구, 누르면 전자계약 화면 이동) */}
+          {unsignedCount > 0 && (
+            <Pressable
+              onPress={() => router.push('/contract')}
+              style={({ pressed }) => [styles.contractNotice, pressed && styles.contractNoticePressed]}
+            >
+              <MaterialCommunityIcons name="file-sign" size={24} color="#1593c4" />
+              <View style={styles.contractNoticeTexts}>
+                <Text style={styles.contractNoticeTitle}>근로계약서가 도착했습니다</Text>
+                <Text style={styles.contractNoticeText}>
+                  서명할 계약서 {unsignedCount}건 · 눌러서 확인하고 서명해 주세요.
+                </Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={22} color="#1593c4" />
+            </Pressable>
+          )}
 
           {/* 2개씩 한 줄로 나눈 업무 메뉴 버튼 */}
           {[menuCards.slice(0, 2), menuCards.slice(2, 4)].map((rowCards) => (
@@ -151,6 +194,12 @@ export default function HomeScreen() {
                 >
                   {card.route ? (
                     <>
+                      {/* 전자계약 카드 오른쪽 위 서명 전 계약서 수 배지 */}
+                      {card.route === '/contract' && unsignedCount > 0 && (
+                        <View style={styles.countBadge}>
+                          <Text style={styles.countBadgeText}>{unsignedCount}</Text>
+                        </View>
+                      )}
                       {/* 업무 아이콘 */}
                       <View style={[styles.menuIcon, { backgroundColor: card.iconBg }]}>
                         <MaterialCommunityIcons name={card.icon} size={34} color={card.iconFg} />
@@ -177,7 +226,7 @@ export default function HomeScreen() {
             <MaterialCommunityIcons name="briefcase-outline" size={18} color="#1687b2" />
             <Text style={styles.infoText}>지점에서 필요한 자료를 한곳에서 관리합니다.</Text>
           </View>
-        </View>
+        </ScrollView>
       </View>
     </SafeAreaView>
   )
@@ -198,8 +247,11 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 640,
   },
-  body: {
+  bodyScroll: {
     flex: 1,
+  },
+  body: {
+    flexGrow: 1,
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 18,
@@ -265,6 +317,54 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#dde5eb',
     backgroundColor: '#ffffff',
+  },
+  contractNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#b9dcea',
+    backgroundColor: '#eaf5fa',
+  },
+  contractNoticePressed: {
+    backgroundColor: '#dcedf5',
+  },
+  contractNoticeTexts: {
+    flex: 1,
+    gap: 2,
+  },
+  contractNoticeTitle: {
+    color: '#172431',
+    fontSize: 15,
+    fontFamily: font.bold,
+  },
+  contractNoticeText: {
+    color: '#52606d',
+    fontSize: 13,
+    fontFamily: font.regular,
+  },
+  countBadge: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 7,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#e5484d',
+  },
+  countBadgeText: {
+    color: '#ffffff',
+    fontSize: 13,
+    lineHeight: 16,
+    fontFamily: font.bold,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
   },
   menuCardPressed: {
     borderColor: '#9cc9db',

@@ -17,6 +17,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { router, useFocusEffect } from 'expo-router'
+import { usePullRefresh } from '@/lib/usePullRefresh'
 import * as Location from 'expo-location'
 import * as Application from 'expo-application'
 
@@ -497,6 +498,20 @@ export default function AttendanceScreen() {
     }, [])
   )
 
+  // 아래로 당겨 새로고침 (오늘 출퇴근·기기 승인 상태 재조회와 현재 위치 새로 확인, 첫 진입 절차는 다시 하지 않음)
+  const pullRefresh = usePullRefresh(async () => {
+    if (!confirmedIdentity) return
+    await Promise.all([
+      refreshIdentityStatus(confirmedIdentity).catch(() => null),
+      attendanceTarget
+        ? getFreshLocation(attendanceTarget).catch((error) => {
+            setPermissionState('denied')
+            setPermissionMessage(error instanceof Error ? error.message : '현재 위치를 확인하지 못했습니다.')
+          })
+        : null,
+    ])
+  })
+
   // 화면을 켜둔 채 자정이 지나거나 앱으로 돌아왔을 때 날짜가 바뀌었으면 오늘 상태를 다시 조회
   useEffect(() => {
     if (!confirmedIdentity || !statusDate) return
@@ -695,12 +710,14 @@ export default function AttendanceScreen() {
         ref={scrollViewRef}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
+        refreshControl={pullRefresh.refreshControl}
         contentContainerStyle={[
           styles.content,
           isCompact && styles.contentCompact,
           isTablet && styles.contentTablet,
         ]}
       >
+        {pullRefresh.notice}
         {/* 앱 단독 출퇴근 화면 제목 영역 */}
         <View style={styles.brandHeader}>
           <Image source={require('../public/image/thefull_logo.png')} style={styles.logo} />

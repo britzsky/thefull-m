@@ -13,3 +13,6 @@ expo-env.d.ts
 
 # 앱스토어 API 키(.p8) 보관 폴더
 key/
+
+# 안드로이드 FCM 설정 파일 (EAS 파일형 환경변수 GOOGLE_SERVICES_JSON으로 전달)
+google-services.json

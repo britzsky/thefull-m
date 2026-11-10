@@ -3,6 +3,12 @@
 const IS_DEV = process.env.APP_VARIANT === 'development'
 
 module.exports = ({ config }) => {
+  // 안드로이드 FCM 설정 파일: EAS 빌드에서는 파일형 환경변수(GOOGLE_SERVICES_JSON) 경로, 로컬에서는 프로젝트 폴더의 파일
+  config.android = {
+    ...config.android,
+    googleServicesFile: process.env.GOOGLE_SERVICES_JSON ?? './google-services.json',
+  }
+
   if (!IS_DEV) return config
 
   return {

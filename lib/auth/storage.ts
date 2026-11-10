@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
+import { unregisterPushToken } from '@/lib/push'
+
 export const AUTH_STORAGE_KEYS = {
   autoLogin: 'autoLogin',
   autoLoginUserId: 'autoLoginUserId',
@@ -179,6 +181,8 @@ export async function getAppSession(): Promise<AppSession> {
 
 // 로그아웃: 조리사/조리원·계정 세션과 자동 로그인 비밀번호 삭제 (아이디·마지막 입력값은 유지)
 export async function logoutAppSession() {
+  // 로그아웃한 기기로는 알림이 가지 않도록 푸시 토큰 삭제
+  await unregisterPushToken()
   await AsyncStorage.removeItem(COOK_SESSION_KEY)
   await clearLoginSession()
   await forgetRememberedPassword()

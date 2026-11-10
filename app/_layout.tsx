@@ -1,5 +1,6 @@
 import { useFonts } from 'expo-font'
-import { Stack } from 'expo-router'
+import * as Notifications from 'expo-notifications'
+import { Stack, router } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect, useState } from 'react'
@@ -7,6 +8,7 @@ import { LogBox, StyleSheet, View } from 'react-native'
 import { WebView } from 'react-native-webview'
 
 import { pretendardFonts } from '@/lib/fonts'
+import { retryPendingPushTokenDelete, routeForNotification } from '@/lib/push'
 import startLogoHtml from '@/lib/startLogoHtml'
 
 // 라이브러리 내부 네이티브 애니메이션이 내는 개발 모드 경고 숨김 (동작 영향 없음)
@@ -30,6 +32,22 @@ export default function RootLayout() {
     SplashScreen.hideAsync()
     setIntroDone(true)
   }
+
+  // 알림을 눌러 앱을 열었을 때 해당 화면으로 이동 (로그인 전이면 로그인 후 이동)
+  // 쌓여 있던 화면(이전 전자계약·위생 점검 등)은 홈까지 닫고 새로 열어 항상 홈 → 전자계약(생년월일 확인) 한 줄로 만듦
+  const lastNotificationResponse = Notifications.useLastNotificationResponse()
+  useEffect(() => {
+    const route = routeForNotification(lastNotificationResponse?.notification.request.content.data)
+    if (route) {
+      router.dismissTo('/home')
+      router.push(route)
+    }
+  }, [lastNotificationResponse])
+
+  // 앱 시작 시 통신 실패로 서버에서 못 지운 로그아웃 기기 토큰을 다시 삭제
+  useEffect(() => {
+    void retryPendingPushTokenDelete()
+  }, [])
 
   // 인트로가 끝나지 않는 경우를 대비한 강제 종료 타이머
   useEffect(() => {
@@ -71,6 +89,7 @@ export default function RootLayout() {
         <Stack.Screen name="home" options={{ headerShown: false, gestureEnabled: false }} />
         <Stack.Screen name="hygiene" options={{ headerShown: false }} />
         <Stack.Screen name="branch-upload" options={{ headerShown: false }} />
+        <Stack.Screen name="contract" options={{ headerShown: false }} />
       </Stack>
       {/* 시작 인트로 영역 (파티클이 모여 로고가 완성되는 HTML 애니메이션, 1회 재생 후 제거) */}
       {!introDone && (

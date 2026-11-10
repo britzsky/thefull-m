@@ -30,6 +30,7 @@ import MenuDocumentViewer from '@/components/MenuDocumentViewer'
 import ZoomableImage from '@/components/ZoomableImage'
 import { AttendanceAccount, fetchAttendanceAccounts } from '@/lib/attendance/api'
 import { getAppSession, logoutAppSession } from '@/lib/auth/storage'
+import { usePullRefresh } from '@/lib/usePullRefresh'
 import {
   BranchDocument,
   BranchUploadRow,
@@ -296,6 +297,13 @@ export default function BranchUploadScreen() {
     void loadRows()
   }, [loadRows])
 
+  // 주차 목록·주차 상세·사진 등록 화면을 아래로 당겨 새로고침 (로딩 화면 없이 최신 업로드 자료로 교체)
+  const rowsRefresh = usePullRefresh(() => loadRows(true))
+  // 거래처 선택 화면을 아래로 당겨 새로고침 (거래처 목록 다시 조회, 실패하면 기존 목록 유지)
+  const accountsRefresh = usePullRefresh(async () => {
+    setAccounts(await fetchAttendanceAccounts())
+  })
+
   // 연월이 바뀌면 주차 기간(월 경계 주 포함)에 걸친 달들의 공휴일 조회 (실패하면 공휴일 표시 없이 진행)
   useEffect(() => {
     if (weeks.length === 0) return
@@ -543,6 +551,8 @@ export default function BranchUploadScreen() {
             keyboardDismissMode="on-drag"
             automaticallyAdjustKeyboardInsets
             contentContainerStyle={styles.listContent}
+            refreshControl={accountsRefresh.refreshControl}
+            ListHeaderComponent={accountsRefresh.notice}
             ListEmptyComponent={
               // 검색 결과 없음 안내
               <Text style={styles.emptyText}>검색된 거래처가 없습니다.</Text>
@@ -595,7 +605,8 @@ export default function BranchUploadScreen() {
             onBack={handleBack}
           />
 
-          <ScrollView contentContainerStyle={styles.bodyContent}>
+          <ScrollView contentContainerStyle={styles.bodyContent} refreshControl={rowsRefresh.refreshControl}>
+            {rowsRefresh.notice}
             {/* 업로드 대상 거래처·날짜 영역 */}
             <View style={styles.card}>
               <Text style={styles.metaText}>{accountName}</Text>
@@ -679,7 +690,8 @@ export default function BranchUploadScreen() {
             <ProgressBar percent={Math.round((done / 8) * 100)} />
           </View>
 
-          <ScrollView contentContainerStyle={styles.bodyContent}>
+          <ScrollView contentContainerStyle={styles.bodyContent} refreshControl={rowsRefresh.refreshControl}>
+            {rowsRefresh.notice}
             {/* 주간 식단표 카드 (등록 시 파일 정보와 교체 버튼, 미등록 시 등록 버튼, 미등록이면 주황 테두리) */}
             <View style={[styles.card, !menuRow && styles.cardNeedAction]}>
               <View style={styles.sectionHeader}>
@@ -874,7 +886,8 @@ export default function BranchUploadScreen() {
           <ProgressBar percent={monthSummary.percent} />
         </View>
 
-        <ScrollView contentContainerStyle={styles.bodyContent}>
+        <ScrollView contentContainerStyle={styles.bodyContent} refreshControl={rowsRefresh.refreshControl}>
+          {rowsRefresh.notice}
           {/* 주차 소제목·주차 수(왼쪽)와 조회 연·월 선택 버튼(오른쪽), 위생 점검 점검 항목 줄과 같은 배치 */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>

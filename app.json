@@ -12,6 +12,7 @@
     ],
     "plugins": [
       "expo-router",
+      "expo-notifications",
       [
         "expo-location",
         {
@@ -52,6 +53,7 @@
     },
     "android": {
       "package": "com.thefull.thefullm",
+      "googleServicesFile": "./google-services.json",
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

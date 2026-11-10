@@ -28,6 +28,7 @@ import HygieneCategoryEditor, { categoryManagePoints, initialCategories } from '
 import { AttendanceAccount, fetchAttendanceAccounts } from '@/lib/attendance/api'
 import { getAppSession, logoutAppSession } from '@/lib/auth/storage'
 import { font } from '@/lib/fonts'
+import { usePullRefresh } from '@/lib/usePullRefresh'
 import {
   HygieneCategory,
   HygieneCheckRow,
@@ -732,6 +733,28 @@ export default function HygieneScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKey])
 
+  // 요약·상세 화면을 아래로 당겨 새로고침 (점검 기록 다시 조회)
+  // 저장하지 않은 수정 내용이 있으면 덮어쓰지 않고 안내, 저장 중·재조회 대기 중이면 건너뜀
+  const recordsRefresh = usePullRefresh(async () => {
+    if (!accountId || isSaving || reloadPendingKeysRef.current.length > 0) return
+    if (Object.values(records).some((record) => record.dirty)) {
+      Alert.alert('새로고침 안 됨', '저장하지 않은 내용이 있습니다.\n저장한 뒤 다시 당겨 주세요.')
+      return
+    }
+    const checkRows = await fetchHygieneChecks(accountId)
+    const freshRecords = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+    // 조회하는 사이 수정이 시작됐으면 화면 내용 유지
+    setRecords((current) => {
+      if (Object.values(current).some((record) => record.dirty)) return current
+      savedRecordsRef.current = freshRecords
+      return freshRecords
+    })
+  })
+  // 거래처 선택 화면을 아래로 당겨 새로고침 (거래처 목록 다시 조회, 실패하면 기존 목록 유지)
+  const accountsRefresh = usePullRefresh(async () => {
+    setAccounts(await fetchAttendanceAccounts())
+  })
+
   // 숨김 처리되지 않은 사용 중 카테고리
   // 구분 없음 기록이 있으면 맨 뒤에 구분 없음 카테고리 추가
   const hasNoCategoryRecords = (records[NO_CATEGORY_KEY]?.pairs.length ?? 0) > 0
@@ -1291,6 +1314,8 @@ export default function HygieneScreen() {
             keyboardDismissMode="on-drag"
             automaticallyAdjustKeyboardInsets
             contentContainerStyle={styles.accountListContent}
+            refreshControl={accountsRefresh.refreshControl}
+            ListHeaderComponent={accountsRefresh.notice}
             ListEmptyComponent={
               // 검색 결과 없음 안내
               <Text style={styles.emptyCardText}>검색된 거래처가 없습니다.</Text>
@@ -1450,12 +1475,14 @@ export default function HygieneScreen() {
               ]}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
+              refreshControl={recordsRefresh.refreshControl}
               automaticallyAdjustKeyboardInsets
               scrollEventThrottle={16}
               onScroll={(event) => {
                 detailScrollYRef.current = event.nativeEvent.contentOffset.y
               }}
             >
+              {recordsRefresh.notice}
               {/* 선택 카테고리 이름·사진 장수·점검일 요약 박스 */}
               <View style={styles.detailSummary}>
                 <View style={styles.detailSummaryText}>
@@ -1598,7 +1625,12 @@ export default function HygieneScreen() {
             </View>
 
             {/* 점검 항목 카드 목록 스크롤 영역 */}
-            <ScrollView style={styles.body} contentContainerStyle={styles.summaryBodyContent}>
+            <ScrollView
+              style={styles.body}
+              contentContainerStyle={styles.summaryBodyContent}
+              refreshControl={recordsRefresh.refreshControl}
+            >
+              {recordsRefresh.notice}
               {/* 점검 항목 제목·개수와 카테고리 편집 버튼 */}
               <View style={styles.bodyHead}>
                 <Text style={styles.bodyHeadTitle}>
