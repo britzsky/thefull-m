@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from 'expo'
 
 import { API_BASE_URL, api } from '@/lib/api/client'
+import type { AppSession } from '@/lib/auth/storage'
 
 // 앱 위생점검 API (카테고리 설정은 tb_account_hygiene_category, 점검 기록은 tb_account_hygiene_management)
 // 점검 기록 한 행 = 조치 전 사진·전달 메모 + 조치 후 사진·조치 메모 한 쌍 (웹 위생관리 한 줄과 동일)
@@ -33,6 +34,8 @@ type HygieneCategoryRow = {
 
 // 거래처 점검 기록 한 행 (조치 전·후 한 쌍, 조회 응답·저장 요청 공통)
 export type HygieneCheckRow = {
+  inspection_yn?: string
+  inspection_month?: string
   idx: number | null
   category_key: string
   problem_image: string
@@ -128,10 +131,40 @@ export async function saveHygieneCategories(accountId: string, categories: Hygie
 // 거래처 점검 기록 누적 조회 (날짜 구분 없이 전체, 카테고리별 여러 행, 등록일자 → 등록 순서)
 export async function fetchHygieneChecks(accountId: string) {
   const response = await api.get<HygieneCheckRow[]>('/Operate/HygieneCheckList', {
+    include_inspections: 'Y',
     account_id: accountId,
   })
 
   return Array.isArray(response) ? response : []
+}
+
+// 홈 화면 위생 점검 배지용: 현장 계정(조리사·조리원, user_type 3) 소속 거래처에서 아직 조치하지 않은 항목 수
+// 조치 완료 기준은 위생 점검 화면과 같다(구분 없음 행은 조치 메모만, 그 외는 조치 후 사진과 조치 메모 모두)
+// 현장 계정이 아니면 0, 조회에 실패하면 null(기존 배지 유지)
+export async function fetchHygienePendingCount(session: NonNullable<AppSession>) {
+  const accountId =
+    session.mode === 'cook' ? session.cook.accountId : session.staff.userType === '3' ? session.staff.accountId : ''
+  if (!accountId || accountId === 'null') return 0
+
+  const rows = await fetchHygieneChecks(accountId).catch(() => null)
+  if (!rows) return null
+
+  return getHygienePendingSummary(rows).count
+}
+
+// 홈 배지와 점검 화면에서 같은 등록월·조치완료 기준으로 집계합니다.
+export function getHygienePendingSummary(rows: HygieneCheckRow[], currentMonth = toDateKey().slice(0, 7)) {
+  const byMonth = new Map<string, number>()
+  let count = 0
+  for (const row of rows) {
+    const month = (row.reg_dt ?? '').slice(0, 7)
+    const hasNote = Boolean(row.clean_note?.trim())
+    const done = row.category_key ? Boolean(row.clean_image && hasNote) : hasNote
+    if (row.inspection_yn === 'Y' || month > currentMonth || done) continue
+    byMonth.set(month, (byMonth.get(month) ?? 0) + 1)
+    count += 1
+  }
+  return { count, months: [...byMonth].sort(([a], [b]) => a.localeCompare(b)) }
 }
 
 // 업로드 사진 긴 변 최대 크기(px), 웹 위생관리 업로드 축소와 같은 기준
@@ -182,14 +215,17 @@ export async function uploadHygienePhoto(localUri: string, uploadDate: string, a
 
   assertSuccess(payload, '사진 업로드에 실패했습니다.')
 
-  return payload.image_path ?? ''
+  if (!payload.image_path?.trim()) throw new Error('업로드된 사진 경로를 확인할 수 없습니다.')
+  return payload.image_path
 }
 
 // 점검 기록 행 저장 (웹 위생관리와 같은 HygieneSave API, idx가 있으면 수정, deleted가 true면 삭제 처리)
 // reg_dt·reg_user_id / mod_dt·mod_user_id는 값을 보낸 행만 갱신 (보내지 않으면 기존 값 유지)
-export async function saveHygieneRows(accountId: string, rows: (HygieneCheckRow & { deleted?: boolean })[]) {
+export type HygieneSaveRow = Partial<HygieneCheckRow> & Pick<HygieneCheckRow, 'idx'> & { deleted?: boolean }
+
+export async function saveHygieneRows(accountId: string, rows: HygieneSaveRow[]) {
   const response = await api.post<MessagePayload>(
-    '/Operate/HygieneSave',
+    rows.some((row) => row.inspection_yn === 'Y') ? '/Operate/HygieneInspectionSave' : '/Operate/HygieneSave',
     rows.map(({ deleted, ...row }) => ({
       ...row,
       account_id: accountId,

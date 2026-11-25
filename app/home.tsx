@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { prefetchCommuteLocation } from '@/lib/attendance/locationPrefetch'
 import { getAppSession, logoutAppSession } from '@/lib/auth/storage'
 import { fetchUnsignedContractCount } from '@/lib/contract/api'
+import { fetchHygienePendingCount } from '@/lib/hygiene/api'
 import { syncAppBadge } from '@/lib/push'
 import { font } from '@/lib/fonts'
 import { usePullRefresh } from '@/lib/usePullRefresh'
@@ -79,12 +80,15 @@ export default function HomeScreen() {
   const isTablet = width >= 768
   // 서명 전 본인 계약서 수 (0보다 크면 상단 안내 배너와 전자계약 카드 배지 표시)
   const [unsignedCount, setUnsignedCount] = useState(0)
+  // 아직 조치하지 않은 위생 점검 항목 수 (0보다 크면 위생 점검 카드 배지 표시, 현장 계정만)
+  const [hygieneCount, setHygieneCount] = useState(0)
 
-  // 서명 전 본인 계약서 수를 다시 조회해 배너·배지에 반영하는 함수 (화면 복귀·당겨서 새로고침 때 호출)
+  // 서명 전 본인 계약서 수와 조치할 위생 점검 항목 수를 다시 조회해 배너·배지에 반영하는 함수 (화면 복귀·당겨서 새로고침 때 호출)
   const loadUnsignedCount = useCallback(async () => {
     const session = await getAppSession()
     if (!session) return
-    const count = await fetchUnsignedContractCount(session)
+    const [count, pending] = await Promise.all([fetchUnsignedContractCount(session), fetchHygienePendingCount(session)])
+    if (pending !== null) setHygieneCount(pending)
     if (count === null) return
     setUnsignedCount(count)
     syncAppBadge(count)
@@ -194,12 +198,15 @@ export default function HomeScreen() {
                 >
                   {card.route ? (
                     <>
-                      {/* 전자계약 카드 오른쪽 위 서명 전 계약서 수 배지 */}
-                      {card.route === '/contract' && unsignedCount > 0 && (
-                        <View style={styles.countBadge}>
-                          <Text style={styles.countBadgeText}>{unsignedCount}</Text>
-                        </View>
-                      )}
+                      {/* 카드 오른쪽 위 숫자 배지 (전자계약: 서명 전 계약서 수, 위생 점검: 조치할 항목 수) */}
+                      {(() => {
+                        const badgeCount = card.route === '/contract' ? unsignedCount : card.route === '/hygiene' ? hygieneCount : 0
+                        return badgeCount > 0 ? (
+                          <View style={styles.countBadge}>
+                            <Text style={styles.countBadgeText}>{badgeCount > 99 ? '99+' : badgeCount}</Text>
+                          </View>
+                        ) : null
+                      })()}
                       {/* 업무 아이콘 */}
                       <View style={[styles.menuIcon, { backgroundColor: card.iconBg }]}>
                         <MaterialCommunityIcons name={card.icon} size={34} color={card.iconFg} />

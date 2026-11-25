@@ -32,8 +32,10 @@ import { usePullRefresh } from '@/lib/usePullRefresh'
 import {
   HygieneCategory,
   HygieneCheckRow,
+  HygieneSaveRow,
   fetchHygieneCategories,
   fetchHygieneChecks,
+  getHygienePendingSummary,
   saveHygieneCategories,
   saveHygieneRows,
   toDateKey,
@@ -47,9 +49,9 @@ import {
 // 상세 화면 한 항목 = 조치 전 사진·전달 메모(왼쪽) + 조치 후 사진·조치 메모(오른쪽) = 위생관리 한 행
 
 // 카테고리 점검 상태
-type HygieneStatus = '완료' | '조치 필요' | '미점검'
+type HygieneStatus = '점검완료' | '조치완료' | '조치필요' | '미점검'
 // 전체 요약 화면 상태 필터
-type HygieneFilter = '전체' | '조치 필요' | '완료' | '미점검'
+type HygieneFilter = '전체' | HygieneStatus
 // 사진 구분 (조치 전 / 조치 후)
 type PhotoSide = 'before' | 'after'
 
@@ -90,6 +92,8 @@ type HygienePair = {
 
 // 카테고리 한 건의 점검 기록
 type HygieneCategoryRecord = {
+  inspectionDates: string[]
+  inspected: boolean
   // 조치 전·후 항목 목록 (등록 순서)
   pairs: HygienePair[]
   // 비고 (첫 번째 항목 행의 note에 저장)
@@ -101,12 +105,16 @@ type HygieneCategoryRecord = {
 }
 
 // 상태 필터 탭 목록
-const filterTabs: HygieneFilter[] = ['전체', '조치 필요', '완료', '미점검']
+const filterTabs: HygieneFilter[] = ['전체', '조치필요', '조치완료', '점검완료', '미점검']
+
+// 전체 요약 카드 정렬 순서 (숫자가 작을수록 위)
+const STATUS_ORDER: Record<HygieneStatus, number> = { 조치필요: 0, 미점검: 1, 조치완료: 2, 점검완료: 3 }
 
 // 점검 상태별 배지 배경색과 글자색
 const statusTone: Record<HygieneStatus, { bg: string; fg: string }> = {
-  완료: { bg: '#eaf7ef', fg: '#2a7a49' },
-  '조치 필요': { bg: '#fff3e6', fg: '#a55d1d' },
+  조치완료: { bg: '#eaf7ef', fg: '#2a7a49' },
+  조치필요: { bg: '#fff3e6', fg: '#a55d1d' },
+  점검완료: { bg: '#eaf5fa', fg: '#16749a' },
   미점검: { bg: '#f0f3f5', fg: '#667584' },
 }
 
@@ -117,6 +125,8 @@ const RELOAD_FAILED_MESSAGE =
   '저장은 완료됐지만 목록을 불러오지 못했습니다.\n위생 점검 화면을 나갔다가 다시 들어와 주세요.'
 
 const EMPTY_RECORD: HygieneCategoryRecord = {
+  inspectionDates: [],
+  inspected: false,
   pairs: [],
   remark: '',
   deletedIdxs: [],
@@ -153,6 +163,13 @@ function toRecordMap(rows: HygieneCheckRow[]) {
     const recordKey = row.category_key || NO_CATEGORY_KEY
     const record = recordMap[recordKey] ?? { ...EMPTY_RECORD, pairs: [] }
 
+    if (row.inspection_yn === 'Y') {
+      record.inspectionDates = [...record.inspectionDates, row.reg_dt ?? '']
+      record.inspected = true
+      recordMap[recordKey] = record
+      continue
+    }
+
     // 비고는 첫 번째 항목 행의 note 사용
     if (record.pairs.length === 0) {
       record.remark = row.note
@@ -182,6 +199,7 @@ function toRecordMap(rows: HygieneCheckRow[]) {
 
 // 선택한 연·월에 등록된 점검 기록 행만 남기기 (등록일 reg_dt 기준)
 function filterRowsByMonth(rows: HygieneCheckRow[], year: number, month: number) {
+  if (month === 0) return rows.filter((row) => !row.reg_dt)
   const prefix = `${year}-${String(month).padStart(2, '0')}`
 
   return rows.filter((row) => (row.reg_dt ?? '').startsWith(prefix))
@@ -205,18 +223,37 @@ function isPairDone(pair: HygienePair) {
   return Boolean(pair.afterPhoto && pair.actionNote.trim())
 }
 
+// 새 항목과 편집한 쪽을 확인해 기존 기록도 반대쪽 조치를 이어서 입력할 수 있게 합니다.
+function getPairSaveError(record: HygieneCategoryRecord) {
+  for (const pair of record.pairs) {
+    if ((pair.idx === null || pair.beforeChanged) && !(pair.beforePhoto && pair.memo.trim())) {
+      return '조치 전 사진과 전달 메모를 모두 입력해 주세요.'
+    }
+    if ((pair.idx === null || pair.afterChanged) && Boolean(pair.afterPhoto) !== Boolean(pair.actionNote.trim())) {
+      return '조치 후 사진과 조치 메모를 모두 입력해 주세요.'
+    }
+  }
+  return ''
+}
+
+// 같은 달에 조치 요청이 있었던 경우에는 조치 기록으로 확인합니다.
+function inspectionHistory(record: HygieneCategoryRecord) {
+  const months = new Set(record.pairs.map((pair) => pair.regDt.slice(0, 7)))
+  return [...new Set(record.inspectionDates)].filter((date) => !months.has(date.slice(0, 7))).sort().reverse()
+}
+
 // 조치가 끝나지 않은 항목 수
 function getRemainingCount(record: HygieneCategoryRecord) {
   return record.pairs.filter((pair) => !isPairDone(pair)).length
 }
 
-// 점검 상태 판정 (항목 없음: 미점검, 모든 항목 조치 완료: 완료, 그 외: 조치 필요)
+// 조치 항목이 없으면 본사의 월별 점검 기록으로 상태를 판정합니다.
 function getCategoryStatus(record: HygieneCategoryRecord): HygieneStatus {
   if (record.pairs.length === 0) {
-    return '미점검'
+    return record.inspected ? '점검완료' : '미점검'
   }
 
-  return getRemainingCount(record) === 0 ? '완료' : '조치 필요'
+  return getRemainingCount(record) === 0 ? '조치완료' : '조치필요'
 }
 
 // 조치 전·후 사진이 있는 항목 수 (요약 카드 전/후 배지용)
@@ -230,11 +267,12 @@ function getPhotoCounts(record: HygieneCategoryRecord) {
 
 // 요약 카드 한 줄 안내 문구 선택
 function getCategoryHint(record: HygieneCategoryRecord, status: HygieneStatus) {
-  if (status === '완료') {
+  if (status === '점검완료') return '추가 조치 사항 없음'
+  if (status === '조치완료') {
     return '모든 항목 조치 완료'
   }
 
-  if (status === '조치 필요') {
+  if (status === '조치필요') {
     return `조치 ${getRemainingCount(record)}건 남음`
   }
 
@@ -374,7 +412,7 @@ function PairCard({
         <View style={styles.pairNumber}>
           <Text style={styles.pairNumberText}>{number}</Text>
         </View>
-        <Text style={styles.pairCardTitle}>항목 {number}</Text>
+        <Text style={styles.pairCardTitle}>항목 {number}{afterOnly && pair.regDt ? ' · ' + pair.regDt : ''}</Text>
         <View style={styles.gridSpacer} />
         {afterOnly ? null : (
           <Pressable hitSlop={8} onPress={onDelete}>
@@ -459,7 +497,7 @@ export default function HygieneScreen() {
   const [viewYear, setViewYear] = useState(() => Number(checkDate.slice(0, 4)))
   const [viewMonth, setViewMonth] = useState(() => Number(checkDate.slice(5, 7)))
   // 연·월 선택 창 종류 (닫힘: null)
-  const [periodPicker, setPeriodPicker] = useState<'year' | 'month' | null>(null)
+  const [periodPicker, setPeriodPicker] = useState<'year' | 'month' | 'overdue' | null>(null)
   // 로그인 사용자 아이디 (저장 시 reg_user_id·mod_user_id)
   const [loginUserId, setLoginUserId] = useState('')
   // 점검 대상 거래처 key (현장 계정은 로그인 거래처, 본사 계정은 선택한 거래처)
@@ -494,7 +532,7 @@ export default function HygieneScreen() {
   const [activeFilter, setActiveFilter] = useState<HygieneFilter>('전체')
   // 상세 화면 카테고리 key (null이면 전체 요약 화면)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  // 사진 크게 보기 대상 (카테고리·항목·처음 보여줄 사진 구분, null이면 닫힘)
+  // 사진 크게 보기 대상과 처음 보여줄 사진 구분
   const [viewer, setViewer] = useState<{ categoryKey: string; pairId: string; side: PhotoSide } | null>(null)
   // 상세 화면 사진·메모 스크롤 영역과 현재 스크롤 위치 (입력칸 가림 방지 스크롤 계산용)
   const detailScrollRef = useRef<ScrollView>(null)
@@ -642,6 +680,32 @@ export default function HygieneScreen() {
     }
   }, [])
 
+  const [fieldRows, setFieldRows] = useState<HygieneCheckRow[]>([])
+  const currentMonth = toDateKey().slice(0, 7)
+  const overdue = useMemo(() => getHygienePendingSummary(fieldRows, currentMonth), [fieldRows, currentMonth])
+  const openOverdueMonth = (month: string) => {
+    if (month) setViewYear(Number(month.slice(0, 4)))
+    setViewMonth(Number(month.slice(5, 7)))
+    setActiveFilter('조치필요')
+    setPeriodPicker(null)
+  }
+
+  const periodYears = useMemo(() => {
+    const year = Number(currentMonth.slice(0, 4))
+    const years = new Set([year, year - 1, year - 2])
+    for (const row of fieldRows) {
+      if (row.reg_dt) years.add(Number(row.reg_dt.slice(0, 4)))
+    }
+    return [...years].sort((a, b) => b - a)
+  }, [fieldRows, currentMonth])
+
+  const readMonth = useCallback((rows: HygieneCheckRow[]) => {
+    if (isFieldUser) setFieldRows(rows)
+    return toRecordMap(filterRowsByMonth(rows, viewYear, viewMonth))
+  }, [isFieldUser, viewYear, viewMonth])
+  const currentRead = useRef(readMonth)
+  currentRead.current = readMonth
+
   // 점검 대상 거래처 결정·변경 시 카테고리 설정·오늘 점검 기록 조회
   useEffect(() => {
     if (!accountId) {
@@ -673,13 +737,16 @@ export default function HygieneScreen() {
               }))
             : initialCategories
         )
-        // 현장 계정(영양사·조리사/조리원)은 연·월 구분 없이 누적 전체, 본사 계정은 선택한 연·월
-        savedRecordsRef.current = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+        // 선택한 월의 카테고리 기록을 읽고 업장의 누적 미조치 건을 함께 집계합니다.
+        savedRecordsRef.current = readMonth(checkRows)
         reloadPendingKeysRef.current = []
         setRecords(savedRecordsRef.current)
         setSelectedKey(null)
-        setActiveFilter('전체')
+        if (!isFieldUser) setActiveFilter('전체')
       } catch (error) {
+        if (!active) return
+        savedRecordsRef.current = {}
+        setRecords({})
         Alert.alert('조회 실패', error instanceof Error ? error.message : '위생 점검 정보를 불러오지 못했습니다.')
       } finally {
         if (active) {
@@ -693,7 +760,7 @@ export default function HygieneScreen() {
     return () => {
       active = false
     }
-  }, [accountId, viewYear, viewMonth, isFieldUser])
+  }, [accountId, readMonth, isFieldUser])
 
   // 처음 진입 시에는 위 거래처 조회가 불러오므로 화면 이동 재조회는 건너뜀
   const isFirstViewRef = useRef(true)
@@ -715,8 +782,8 @@ export default function HygieneScreen() {
 
     fetchHygieneChecks(accountId)
       .then((checkRows) => {
-        if (!active) return
-        const freshRecords = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+        if (!active || currentRead.current !== readMonth) return
+        const freshRecords = readMonth(checkRows)
 
         // 조회하는 사이 수정이 시작됐으면 화면 내용 유지
         setRecords((current) => {
@@ -742,7 +809,8 @@ export default function HygieneScreen() {
       return
     }
     const checkRows = await fetchHygieneChecks(accountId)
-    const freshRecords = toRecordMap(isFieldUser ? checkRows : filterRowsByMonth(checkRows, viewYear, viewMonth))
+    if (currentRead.current !== readMonth) return
+    const freshRecords = readMonth(checkRows)
     // 조회하는 사이 수정이 시작됐으면 화면 내용 유지
     setRecords((current) => {
       if (Object.values(current).some((record) => record.dirty)) return current
@@ -757,11 +825,19 @@ export default function HygieneScreen() {
 
   // 숨김 처리되지 않은 사용 중 카테고리
   // 구분 없음 기록이 있으면 맨 뒤에 구분 없음 카테고리 추가
-  const hasNoCategoryRecords = (records[NO_CATEGORY_KEY]?.pairs.length ?? 0) > 0
-  const activeCategories = useMemo(
-    () => [...categories.filter((category) => category.visible), ...(hasNoCategoryRecords ? [NO_CATEGORY] : [])],
-    [categories, hasNoCategoryRecords]
-  )
+  const activeCategories = useMemo(() => {
+    const recordedKeys = Object.keys(records).filter((key) => records[key].pairs.length || records[key].inspected)
+    const result = categories.filter((category) => category.visible || (isFieldUser && recordedKeys.includes(category.key)))
+    if (isFieldUser) {
+      for (const key of recordedKeys) {
+        if (key !== NO_CATEGORY_KEY && !categories.some((category) => category.key === key)) {
+          result.push({ ...NO_CATEGORY, key, title: '삭제된 카테고리' })
+        }
+      }
+    }
+    if (recordedKeys.includes(NO_CATEGORY_KEY)) result.push(NO_CATEGORY)
+    return result
+  }, [categories, records, isFieldUser])
 
   // 헤더 표시용 점검 대상 거래처명
   const accountName = accounts.find((account) => account.account_id === accountId)?.account_name ?? ''
@@ -812,10 +888,10 @@ export default function HygieneScreen() {
 
     const statuses = Object.values(statusMap)
     // 조치 필요 카테고리가 있을 때만 조치 필요, 전부 완료면 완료, 그 외(미점검 포함)는 미점검
-    const overallStatus: HygieneStatus = statuses.some((status) => status === '조치 필요')
-      ? '조치 필요'
-      : statuses.length > 0 && statuses.every((status) => status === '완료')
-        ? '완료'
+    const overallStatus: HygieneStatus = statuses.some((status) => status === '조치필요')
+      ? '조치필요'
+      : statuses.length > 0 && statuses.every((status) => status === '조치완료' || status === '점검완료')
+        ? (doneCount > 0 ? '조치완료' : '점검완료')
         : '미점검'
 
     return {
@@ -827,13 +903,27 @@ export default function HygieneScreen() {
   }, [activeCategories, records, statusMap])
 
   // 전체 요약 카드 표시 대상 카테고리 (메인 표시 옵션 + 상태 필터)
-  const visibleCategories = activeCategories.filter(
-    (category) => category.showOnMain && (activeFilter === '전체' || statusMap[category.key] === activeFilter)
-  )
+  // 상태 우선순위(조치필요 → 미점검 → 조치완료 → 점검완료)로 정렬하고, 같은 상태끼리는 카테고리 설정 순서 유지
+  // 업장에서는 같은 카테고리 안의 지난 조치도 상태별로 찾아볼 수 있습니다.
+  const filteredRecord = (key: string) => {
+    const record = getRecord(key)
+    if (!isFieldUser || activeFilter === '전체') return record
+    if (activeFilter === '점검완료') {
+      return { ...record, pairs: [], inspected: inspectionHistory(record).length > 0 }
+    }
+    if (activeFilter === '미점검') return record
+    return { ...record, pairs: record.pairs.filter((pair) => isPairDone(pair) === (activeFilter === '조치완료')) }
+  }
+  const visibleCategories = activeCategories.filter((category) => {
+    const record = getRecord(category.key)
+    if (!category.showOnMain && !(isFieldUser && (record.inspected || record.pairs.length))) return false
+    if (activeFilter === '전체') return true
+    return getCategoryStatus(filteredRecord(category.key)) === activeFilter
+  }).sort((a, b) => STATUS_ORDER[statusMap[a.key]] - STATUS_ORDER[statusMap[b.key]])
 
-  // 상세 화면 카테고리와 점검 기록
   const selectedCategory = activeCategories.find((category) => category.key === selectedKey) ?? null
   const selectedRecord = selectedKey ? getRecord(selectedKey) : null
+  const saveError = selectedRecord ? getPairSaveError(selectedRecord) : ''
 
   // 후면 카메라 현장 사진 촬영 (사진보관함 선택 없이 촬영만 허용)
   const capturePhoto = async (): Promise<HygienePhoto | null> => {
@@ -1040,6 +1130,14 @@ export default function HygieneScreen() {
     }
 
     // 항목 없이 비고만 입력한 카테고리 확인 (비고는 첫 항목 행에 저장)
+    for (const key of targets) {
+      const message = getPairSaveError(records[key])
+      if (message) {
+        Alert.alert('입력 확인', message)
+        return false
+      }
+    }
+
     const remarkOnly = targets.find((key) => records[key].pairs.length === 0 && records[key].remark.trim())
 
     if (remarkOnly) {
@@ -1050,27 +1148,40 @@ export default function HygieneScreen() {
     setIsSaving(true)
 
     try {
-      const rows: (HygieneCheckRow & { deleted?: boolean })[] = []
+      const rows: HygieneSaveRow[] = []
 
       for (const key of targets) {
         const record = records[key]
 
+        if (record.inspected && !savedRecordsRef.current[key]?.inspected) {
+          rows.push({
+            idx: null, category_key: key, inspection_yn: 'Y',
+            inspection_month: `${viewYear}-${String(viewMonth).padStart(2, '0')}`, reg_user_id: loginUserId,
+            problem_image: '', problem_note: '', clean_image: '', clean_note: '', note: '',
+          })
+        }
+
         // 항목별 행 (사진 업로드 후 경로 저장, 비고는 첫 행)
         // 조치 전 쪽이 바뀐 행(신규 포함)은 reg_dt·reg_user_id, 조치 후 쪽이 바뀐 행은 mod_dt·mod_user_id 갱신
         for (const [index, pair] of record.pairs.entries()) {
-          const beforeChanged = pair.beforeChanged || pair.idx === null
+          const saved = savedRecordsRef.current[key]
+          const remarkChanged = !pair.noCategory && index === 0 &&
+            (record.remark !== saved?.remark || pair.idx !== saved?.pairs[0]?.idx)
+          const beforeChanged = !isFieldUser && (pair.beforeChanged || pair.idx === null)
+          if (!beforeChanged && !pair.afterChanged && !remarkChanged) continue
 
           rows.push({
             idx: pair.idx,
-            category_key: key === NO_CATEGORY_KEY ? '' : key,
-            problem_image: await resolvePhotoPath(pair.beforePhoto),
-            problem_note: pair.memo,
-            clean_image: await resolvePhotoPath(pair.afterPhoto),
-            clean_note: pair.actionNote,
-            // 구분 없음 행은 행별 비고 유지, 그 외는 카테고리 비고를 첫 행에 저장
-            note: pair.noCategory ? pair.note : index === 0 ? record.remark : '',
-            ...(beforeChanged ? { reg_dt: checkDate, reg_user_id: loginUserId } : {}),
-            ...(pair.afterChanged ? { mod_dt: checkDate, mod_user_id: loginUserId } : {}),
+            ...(pair.idx === null ? { category_key: key === NO_CATEGORY_KEY ? '' : key } : {}),
+            ...(beforeChanged ? {
+              problem_image: await resolvePhotoPath(pair.beforePhoto), problem_note: pair.memo,
+              reg_dt: checkDate, reg_user_id: loginUserId,
+            } : {}),
+            ...(pair.afterChanged ? {
+              clean_image: await resolvePhotoPath(pair.afterPhoto), clean_note: pair.actionNote,
+              mod_dt: checkDate, mod_user_id: loginUserId,
+            } : {}),
+            ...(remarkChanged ? { note: record.remark } : {}),
           })
         }
 
@@ -1078,12 +1189,6 @@ export default function HygieneScreen() {
         for (const idx of record.deletedIdxs) {
           rows.push({
             idx,
-            category_key: key === NO_CATEGORY_KEY ? '' : key,
-            problem_image: '',
-            problem_note: '',
-            clean_image: '',
-            clean_note: '',
-            note: '',
             // 삭제한 사용자 아이디
             mod_user_id: loginUserId,
             deleted: true,
@@ -1133,9 +1238,7 @@ export default function HygieneScreen() {
       }
     }
 
-    const freshRecords = toRecordMap(
-      isFieldUser ? (checkRows ?? []) : filterRowsByMonth(checkRows ?? [], viewYear, viewMonth)
-    )
+    const freshRecords = readMonth(checkRows ?? [])
 
     for (const key of keys) {
       savedRecordsRef.current[key] = freshRecords[key] ?? EMPTY_RECORD
@@ -1171,14 +1274,7 @@ export default function HygieneScreen() {
     }
   }
 
-  // 전체 저장 버튼 처리 (사용 중 카테고리 점검 기록 일괄 저장)
-  const handleSaveAll = async () => {
-    if (await saveRecords(activeCategories.map((category) => category.key))) {
-      Alert.alert('저장 완료', '위생 점검 내용이 저장되었습니다.')
-    }
-  }
-
-  // 상세 화면 저장 버튼 처리 (선택 카테고리 저장 후 상세 화면 유지)
+  // 선택한 카테고리의 변경 사항 저장
   const handleSaveCategory = async () => {
     if (!selectedCategory) {
       return
@@ -1190,7 +1286,8 @@ export default function HygieneScreen() {
   }
 
   // 상세 화면 전체로 버튼 처리 (수정사항이 있으면 저장 후 이동 / 저장 안 하고 이동 / 취소 선택)
-  const handleBackToSummary = () => {
+  const leaveCategory = (nextKey: string | null) => {
+    if (selectedKey === nextKey) return
     if (!selectedCategory) {
       return
     }
@@ -1198,7 +1295,7 @@ export default function HygieneScreen() {
     const categoryKey = selectedCategory.key
 
     if (!records[categoryKey]?.dirty) {
-      setSelectedKey(null)
+      setSelectedKey(nextKey)
       return
     }
 
@@ -1208,7 +1305,7 @@ export default function HygieneScreen() {
         onPress: () => {
           void saveRecords([categoryKey]).then((saved) => {
             if (saved) {
-              setSelectedKey(null)
+              setSelectedKey(nextKey)
             }
           })
         },
@@ -1222,7 +1319,7 @@ export default function HygieneScreen() {
             ...current,
             [categoryKey]: savedRecordsRef.current[categoryKey] ?? EMPTY_RECORD,
           }))
-          setSelectedKey(null)
+          setSelectedKey(nextKey)
         },
       },
       { text: '취소', style: 'cancel' },
@@ -1385,8 +1482,16 @@ export default function HygieneScreen() {
   const orderPairs = (categoryKey: string, pairs: HygienePair[]) => {
     if (!isFieldUser) return pairs
     const savedPairs = savedRecordsRef.current[categoryKey]?.pairs ?? []
-    const isSavedDone = (pair: HygienePair) => isPairDone(savedPairs.find((saved) => saved.id === pair.id) ?? pair)
-    return [...pairs].sort((a, b) => Number(isSavedDone(a)) - Number(isSavedDone(b)))
+    const savedDone = new Map(savedPairs.map((pair) => [pair.id, isPairDone(pair)]))
+    const isSavedDone = (pair: HygienePair) => savedDone.get(pair.id) ?? isPairDone(pair)
+    const shown = pairs.filter((pair) => {
+      if (activeFilter === '점검완료') return false
+      if (activeFilter === '조치필요') return !isSavedDone(pair)
+      if (activeFilter === '조치완료') return isSavedDone(pair)
+      return true
+    })
+    return shown.sort((a, b) => Number(isSavedDone(a)) - Number(isSavedDone(b))
+      || (isSavedDone(a) ? (b.modDt || b.regDt).localeCompare(a.modDt || a.regDt) : a.regDt.localeCompare(b.regDt)))
   }
   const detailPairs = selectedKey && selectedRecord ? orderPairs(selectedKey, selectedRecord.pairs) : []
 
@@ -1410,7 +1515,7 @@ export default function HygieneScreen() {
               hitSlop={8}
               disabled={isSaving}
               style={styles.headerBackButton}
-              onPress={selectedCategory ? handleBackToSummary : handleGoMain}
+              onPress={selectedCategory ? () => leaveCategory(null) : handleGoMain}
             >
               <MaterialCommunityIcons name="chevron-left" size={26} color="#273542" />
             </Pressable>
@@ -1439,7 +1544,7 @@ export default function HygieneScreen() {
               style={styles.categoryChipsBar}
               contentContainerStyle={styles.categoryChips}
             >
-              {activeCategories.map((category) => {
+              {(isFieldUser && activeFilter !== '전체' ? visibleCategories : activeCategories).map((category) => {
                 const isActive = category.key === selectedKey
 
                 return (
@@ -1453,7 +1558,7 @@ export default function HygieneScreen() {
                       if (isActive) scrollChipIntoView(category.key, false)
                     }}
                     style={[styles.categoryChip, isActive && styles.categoryChipActive]}
-                    onPress={() => setSelectedKey(category.key)}
+                    onPress={() => leaveCategory(category.key)}
                   >
                     <Text style={[styles.categoryChipText, isActive && styles.categoryChipTextActive]}>
                       {category.title}
@@ -1492,7 +1597,25 @@ export default function HygieneScreen() {
                     {getRemainingCount(selectedRecord) > 0 ? ` (${getRemainingCount(selectedRecord)}건 남음)` : ''}
                   </Text>
                 </View>
-                <Text style={styles.detailSummaryHint}>누적 {selectedRecord.pairs.length}건</Text>
+                <View style={styles.detailSummaryActions}>
+                  <Text style={styles.detailSummaryHint}>{viewMonth ? `${viewMonth}월` : '등록일 미기록'} {selectedRecord.pairs.length}건</Text>
+                  {isFieldUser && activeFilter !== '전체' ? (
+                    <>
+                      <Badge compact label={activeFilter} {...statusTone[activeFilter]} />
+                      <Pressable style={styles.editButton} hitSlop={6} onPress={() => setActiveFilter('전체')}>
+                        <Text style={styles.editButtonText}>전체 내역 보기</Text>
+                      </Pressable>
+                    </>
+                  ) : (
+                    <Badge compact label={statusMap[selectedCategory.key]} {...statusTone[statusMap[selectedCategory.key]]} />
+                  )}
+                  {isHeadOffice && viewYear === Number(checkDate.slice(0, 4)) && viewMonth === Number(checkDate.slice(5, 7)) &&
+                  selectedCategory.key !== NO_CATEGORY_KEY && statusMap[selectedCategory.key] === '미점검' ? (
+                    <Pressable style={styles.editButton} onPress={() => updateRecord(selectedCategory.key, (record) => ({ ...record, inspected: true }))}>
+                      <Text style={styles.editButtonText}>점검완료 처리</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
 
               {/* 카테고리 점검 안내 박스 (주요 확인내용 칩 + 관리 포인트) */}
@@ -1527,11 +1650,17 @@ export default function HygieneScreen() {
               ) : null}
 
               {/* 조치 전·후 항목 카드 목록 (한 항목 = 위생관리 한 줄), 항목이 없으면 안내 박스 */}
-              {selectedRecord.pairs.length === 0 ? (
+              {isFieldUser && (activeFilter === '전체' || activeFilter === '점검완료') && inspectionHistory(selectedRecord).map((date) => (
+                <View key={date} style={styles.guideBox}>
+                  <Text style={styles.guidePoint}>{date} · 점검완료</Text>
+                  <Text style={styles.guidePoint}>추가 조치 사항 없음</Text>
+                </View>
+              ))}
+              {detailPairs.length === 0 && !(isFieldUser && selectedRecord.inspected) ? (
                 <View style={styles.pairEmpty}>
                   <Text style={styles.pairEmptyText}>등록된 항목이 없습니다.</Text>
                   <Text style={styles.pairEmptyText}>
-                    {isFieldUser
+                    {selectedRecord.inspected ? '점검을 마쳤으며 추가 조치 사항이 없습니다.' : isFieldUser
                       ? '본사에서 점검 항목을 등록하면 조치 후 사진을 추가할 수 있습니다.'
                       : '아래 항목 추가를 누르면 조치 전 사진 촬영이 시작됩니다.'}
                   </Text>
@@ -1572,14 +1701,15 @@ export default function HygieneScreen() {
               )}
             </ScrollView>
 
+            {saveError ? <Text style={styles.saveError}>{saveError}</Text> : null}
             {/* 전체 요약 복귀 및 카테고리 저장 하단 버튼 바 */}
             <View style={styles.bottomBar}>
-              <Pressable disabled={isSaving} style={styles.secondaryButton} onPress={handleBackToSummary}>
+              <Pressable disabled={isSaving} style={styles.secondaryButton} onPress={() => leaveCategory(null)}>
                 <Text style={styles.secondaryButtonText}>전체로 이동</Text>
               </Pressable>
               <Pressable
-                disabled={isSaving}
-                style={[styles.primaryButton, styles.primaryButtonFlex, isSaving && styles.buttonDisabled]}
+                disabled={isSaving || Boolean(saveError)}
+                style={[styles.primaryButton, styles.primaryButtonFlex, (isSaving || Boolean(saveError)) && styles.buttonDisabled]}
                 onPress={() => void handleSaveCategory()}
               >
                 {isSaving ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.primaryButtonText}>저장</Text>}
@@ -1595,9 +1725,18 @@ export default function HygieneScreen() {
                 <Text style={styles.summaryTitle}>
                   전체 점검 현황 <Text style={styles.summaryPercent}>{summary.percent}%</Text>
                 </Text>
+                {isFieldUser && overdue.count > 0 && (
+                  <Pressable accessibilityRole="button" style={[styles.overdueNotice, styles.cardNeedAction]}
+                    onPress={() => {
+                      if (overdue.months.length === 1) openOverdueMonth(overdue.months[0][0])
+                      else setPeriodPicker('overdue')
+                    }}>
+                    <Text style={styles.overdueTitle}>누적 미조치 사항 {overdue.count}건 ›</Text>
+                  </Pressable>
+                )}
                 <View style={styles.summaryStats}>
-                  <Badge label={`완료 ${summary.doneCount}건`} {...statusTone['완료']} large />
-                  <Badge label={`조치 필요 ${summary.pendingCount}건`} {...statusTone['조치 필요']} large />
+                  <Badge label={`조치완료 ${summary.doneCount}건`} {...statusTone['조치완료']} large />
+                  <Badge label={`조치필요 ${summary.pendingCount}건`} {...statusTone['조치필요']} large />
                 </View>
               </View>
               {/* 진행률 막대 */}
@@ -1615,6 +1754,8 @@ export default function HygieneScreen() {
                   // 상태 필터 탭 버튼
                   <Pressable
                     key={filter}
+                    hitSlop={{ top: 5, bottom: 5, left: 0, right: 0 }}
+                    accessibilityRole="tab" accessibilityState={{ selected: isActive }}
                     style={[styles.filterTab, isActive && styles.filterTabActive]}
                     onPress={() => setActiveFilter(filter)}
                   >
@@ -1638,17 +1779,13 @@ export default function HygieneScreen() {
                 </Text>
                 {/* 조회 연·월 선택 버튼과 카테고리 편집 버튼 */}
                 <View style={styles.bodyHeadActions}>
-                  {/* 연·월 선택은 본사 계정만 (현장 계정은 누적 전체) */}
-                  {isFieldUser ? null : (
-                    <>
-                      <Pressable style={styles.editButton} onPress={() => setPeriodPicker('year')}>
-                        <Text style={styles.editButtonText}>{viewYear}년 ▾</Text>
-                      </Pressable>
-                      <Pressable style={styles.editButton} onPress={() => setPeriodPicker('month')}>
-                        <Text style={styles.editButtonText}>{viewMonth}월 ▾</Text>
-                      </Pressable>
-                    </>
-                  )}
+                  {/* 점검 등록 연·월 선택 */}
+                  <Pressable style={styles.editButton} onPress={() => setPeriodPicker('year')}>
+                    <Text style={styles.editButtonText}>{viewYear}년 ▾</Text>
+                  </Pressable>
+                  <Pressable style={styles.editButton} onPress={() => setPeriodPicker('month')}>
+                    <Text style={styles.editButtonText}>{viewMonth ? `${viewMonth}월` : '미기록'} ▾</Text>
+                  </Pressable>
                   {/* 카테고리 편집은 본사 계정만 */}
                   {isHeadOffice ? (
                     <Pressable style={styles.editButton} onPress={() => setIsEditingCategories(true)}>
@@ -1667,31 +1804,54 @@ export default function HygieneScreen() {
               >
                 <Pressable style={styles.periodBackdrop} onPress={() => setPeriodPicker(null)}>
                   <View style={styles.periodSheet}>
-                    <Text style={styles.periodTitle}>{periodPicker === 'year' ? '연도 선택' : '월 선택'}</Text>
-                    <View style={styles.periodOptions}>
-                      {(periodPicker === 'year'
-                        ? [0, 1, 2].map((offset) => Number(checkDate.slice(0, 4)) - offset)
-                        : Array.from({ length: 12 }, (_, index) => index + 1)
-                      ).map((value) => {
-                        const isActive = value === (periodPicker === 'year' ? viewYear : viewMonth)
+                    {periodPicker === 'overdue' ? (
+                      <>
+                        <Text style={styles.periodTitle}>월별 미조치 내역</Text>
+                        <ScrollView>
+                          {overdue.months.map(([month, count]) => (
+                            <Pressable key={month} accessibilityRole="button" style={styles.overdueMonthRow}
+                              onPress={() => openOverdueMonth(month)}>
+                              <Text style={styles.editButtonText}>{month ? month.replace('-', '년 ') + '월' : '등록일 미기록'}</Text>
+                              <Text style={styles.overdueLink}>{count}건 보기 ›</Text>
+                            </Pressable>
+                          ))}
+                        </ScrollView>
+                        <Pressable style={styles.editButton} onPress={() => setPeriodPicker(null)}>
+                          <Text style={styles.editButtonText}>닫기</Text>
+                        </Pressable>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.periodTitle}>{periodPicker === 'year' ? '연도 선택' : '월 선택'}</Text>
+                        <View style={styles.periodOptions}>
+                          {(periodPicker === 'year'
+                            ? periodYears
+                            : Array.from({ length: 12 }, (_, index) => index + 1)
+                          ).map((value) => {
+                            const isActive = value === (periodPicker === 'year' ? viewYear : viewMonth)
 
-                        return (
-                          <Pressable
-                            key={value}
-                            style={[styles.periodOption, isActive && styles.periodOptionActive]}
-                            onPress={() => {
-                              if (periodPicker === 'year') setViewYear(value)
-                              else setViewMonth(value)
-                              setPeriodPicker(null)
-                            }}
-                          >
-                            <Text style={[styles.periodOptionText, isActive && styles.periodOptionTextActive]}>
-                              {periodPicker === 'year' ? `${value}년` : `${value}월`}
-                            </Text>
-                          </Pressable>
-                        )
-                      })}
-                    </View>
+                            return (
+                              <Pressable
+                                key={value}
+                                style={[styles.periodOption, isActive && styles.periodOptionActive]}
+                                onPress={() => {
+                                  setActiveFilter('전체')
+                                  if (periodPicker === 'year') {
+                                    setViewYear(value)
+                                    if (!viewMonth) setViewMonth(Number(currentMonth.slice(5)))
+                                  } else setViewMonth(value)
+                                  setPeriodPicker(null)
+                                }}
+                              >
+                                <Text style={[styles.periodOptionText, isActive && styles.periodOptionTextActive]}>
+                                  {periodPicker === 'year' ? `${value}년` : `${value}월`}
+                                </Text>
+                              </Pressable>
+                            )
+                          })}
+                        </View>
+                      </>
+                    )}
                   </View>
                 </Pressable>
               </Modal>
@@ -1706,15 +1866,15 @@ export default function HygieneScreen() {
                   // 요약 카드 한 줄 (2칸)
                   <View key={`card-row-${rowIndex}`} style={styles.gridRow}>
                     {row.map((category) => {
-                      const record = getRecord(category.key)
-                      const status = statusMap[category.key]
+                      const record = filteredRecord(category.key)
+                      const status = getCategoryStatus(record)
 
                       return (
                         // 요약 카드 한 칸 (내용 길이와 관계없이 줄 폭의 절반 고정)
                         <View key={category.key} style={styles.gridCell}>
                         {/* 카테고리별 요약 카드 (탭 시 상세 화면 이동, 조치 필요 카테고리는 주황 테두리) */}
                         <Pressable
-                          style={[styles.overviewCard, status === '조치 필요' && styles.cardNeedAction]}
+                          style={[styles.overviewCard, status === '조치필요' && styles.cardNeedAction]}
                           onPress={() => setSelectedKey(category.key)}
                         >
                           {/* 카드 상단 카테고리명 (글자 크기 고정, 긴 이름은 두 줄까지) */}
@@ -1747,24 +1907,10 @@ export default function HygieneScreen() {
               {/* 화면 사용 안내 TIP 박스 */}
               <View style={styles.hint}>
                 <Badge label="TIP" bg="#ddf0f8" fg="#24708d" large />
-                <Text style={styles.hintText}>전체에서는 요약만 보고, 카드 선택 시 사진·메모 상세로 이동합니다.</Text>
+                <Text style={styles.hintText}>{isFieldUser ? '지난 조치는 조치완료를 누른 뒤 카테고리를 선택해 확인하세요.' : '카테고리를 선택하면 사진과 메모를 확인할 수 있습니다.'}</Text>
               </View>
             </ScrollView>
 
-            {/* 전체 저장 하단 버튼 바 */}
-            <View style={styles.bottomBar}>
-              <Pressable
-                disabled={isSaving}
-                style={[styles.primaryButton, styles.primaryButtonFlex, isSaving && styles.buttonDisabled]}
-                onPress={() => void handleSaveAll()}
-              >
-                {isSaving ? (
-                  <ActivityIndicator color="#ffffff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>전체 저장</Text>
-                )}
-              </Pressable>
-            </View>
           </>
         )}
       </View>
@@ -1814,6 +1960,12 @@ const styles = StyleSheet.create({
     color: '#7a8998',
     fontSize: 16,
     fontFamily: font.medium,
+  },
+  saveError: {
+    paddingHorizontal: 18,
+    paddingVertical: 6,
+    fontSize: 16,
+    color: '#8c3f15',
   },
   buttonDisabled: {
     opacity: 0.7,
@@ -1907,6 +2059,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
   },
   summaryTitleRow: {
+    flexWrap: 'wrap',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1937,28 +2090,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  // 상태 필터 탭 줄 (5개 탭을 한 줄에 같은 너비로 배치)
   filterTabs: {
     flexDirection: 'row',
-    gap: 8,
+    flexWrap: 'wrap',
+    gap: 6,
     paddingHorizontal: 18,
     paddingVertical: 10,
     backgroundColor: '#ffffff',
   },
   filterTab: {
+    flexGrow: 1,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 999,
     borderWidth: 1,
     borderColor: '#dce4ea',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
+    paddingHorizontal: 4,
     backgroundColor: '#f7f9fa',
   },
   filterTabActive: {
-    paddingHorizontal: 18,
     borderColor: '#1593c4',
     backgroundColor: '#1593c4',
   },
   filterTabText: {
-    color: '#5b6a79',
+    color: '#42515c',
     fontSize: 16,
     fontFamily: font.medium,
   },
@@ -1973,8 +2130,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 14,
     paddingBottom: 18,
-    gap: 12,
+    gap: 14,
   },
+  overdueNotice: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    backgroundColor: '#fff6e9',
+    gap: 4,
+  },
+  overdueTitle: { color: '#753f15', fontFamily: font.bold, fontSize: 14 },
+  overdueLink: { color: '#753f15', fontFamily: font.medium, fontSize: 16 },
   bodyHead: {
     minHeight: 32,
     flexDirection: 'row',
@@ -2009,7 +2176,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.35)',
   },
+  overdueMonthRow: {
+    minHeight: 48,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#e6ecf0',
+  },
   periodSheet: {
+    maxHeight: '85%',
     width: '100%',
     maxWidth: 360,
     padding: 18,
@@ -2079,7 +2255,8 @@ const styles = StyleSheet.create({
   },
   overviewCard: {
     flex: 1,
-    padding: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     gap: 6,
     borderRadius: 14,
     borderWidth: 1,
@@ -2087,7 +2264,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
   },
   overviewCardTop: {
-    minHeight: 24,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -2095,6 +2271,7 @@ const styles = StyleSheet.create({
   },
   overviewCardTitle: {
     flex: 1,
+    includeFontPadding: false,
     color: '#273542',
     fontSize: 17,
     lineHeight: 22,
@@ -2107,7 +2284,9 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   overviewCardHint: {
-    minHeight: 24,
+    marginTop: 'auto',
+    lineHeight: 20,
+    includeFontPadding: false,
     color: '#728190',
     fontSize: 14,
     fontFamily: font.regular,
@@ -2261,6 +2440,8 @@ const styles = StyleSheet.create({
   detailSummary: {
     minHeight: 56,
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 14,
@@ -2270,6 +2451,14 @@ const styles = StyleSheet.create({
   },
   detailSummaryText: {
     gap: 2,
+  },
+  detailSummaryActions: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
   },
   detailSummaryTitle: {
     color: '#263442',
